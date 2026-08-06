@@ -49,17 +49,29 @@
 - **策划案**：`E:\workbuddy-txt\时序\时叙_项目策划案.md`
 - **V1 砍清单**（不主动建议，除非用户提）：语音、形象/桌面宠物、词典情感引擎、每日自动总结、向量检索、多端 —— 全部后置。
 
-### 当前状态（V1 完成 ✅）
+### 当前状态（V1 完成 ✅，2026-08-06）
 - 脚手架完整：后端 FastAPI + WS 流式 + SQLite 三表；前端 Vue3 单页（对话区 + 侧边面板）
 - 真对话已通：DeepSeek key 已配置在 `backend/.env`（gitignored），persona 生效
 - 历史落库：刷新页面可找回对话；侧边面板显示亲密度/话题/记忆时间线
-- 已踩并修复：WS 路径不一致 403（见「经验教训」）
+- **一体多面已落地**：4 张面具（同行者/老闺蜜/感情向导/工作参谋）、规则词表 + LLM 兜底路由、2 轮切换冷却、侧边面板显示「当前面具」；自我记忆只记里程碑/昵称（高置信）
+- **对话历史按 token 上限 5000 截断**（启发式估算，不引 tiktoken）
+- **3D 数字人做了又拆**：VrmAvatar（three-vrm）渲染跑通、相机 bug 已修，但用户对 `three-vrm-girl.vrm` 模型观感不满意，已从界面移除（`VrmAvatar.vue`/`maskVrm.ts`/模型文件保留，方案待定）
+- **已提交 GitHub**：`kbd-1-A/SX`，master 分支，51 文件（见「远程仓库与代理」）
 
 ### 代码结构与运行
 - **灵魂唯一来源**：`backend/persona/shisu.md`——改它 = 改时叙性格，前后端都以它为准
-- 分层：`app/api/`（WS+REST）→ `app/agents/`（persona 加载 + DeepSeek 路由）→ `app/memory/`（SQLite 读写 + 画像）→ `app/db/`（schema）
-- 启动：`cd backend && uvicorn app.main:app --reload --port 8000`；另开终端 `cd frontend && npm run dev`
+- 人格分层：`persona/shisu.md`（核心自我）+ `persona/masks/`（4 面具表达层）；路由在 `app/agents/mask.py`（规则词表 + LLM 兜底）
+- 代码分层：`app/api/`（WS+REST）→ `app/agents/`（persona 加载 + DeepSeek 路由 + 面具）→ `app/memory/`（SQLite 读写 + 画像 + 自我记忆 `self.py`）→ `app/db/`（schema）
+- 前端：对话区 + 侧边面板；`VrmAvatar.vue`/`lib/maskVrm.ts` 已实现但界面未启用（数字人方案待定）
+- 启动：`cd backend && uvicorn app.main:app --port 8000`（**不带 `--reload`**，中文路径假重载，改代码手动重启）；另开终端 `cd frontend && npm run dev`
 - 前端 WS 连 **`/ws/chat`**（勿改成 `/ws`），经 Vite 代理转后端 8000
+- 测试：后端 `backend/tests/`（21 个，`pytest`）；前端 `npm test`（vitest）
+
+### 远程仓库与代理（2026-08-06）
+- 远程：`origin = https://github.com/kbd-1-A/SX.git`（master 分支，初始提交 51 文件）
+- GitHub 国内直连被墙（`Recv failure: Connection was reset`）；本机 Clash 在 `127.0.0.1:7890`，已配 git 全局代理：`git config --global http.proxy http://127.0.0.1:7890`
+- 关掉 Clash 后 git 会报代理错 → `git config --global --unset http.proxy https.proxy` 取消
+- 提交守则：`backend/.env`（含 DeepSeek key）在 `.gitignore`，绝不提交；`frontend/tsconfig.tsbuildinfo`、`.tmp_screenshots/` 已忽略
 
 ### 给 Claude Code 的指令（工程部分）
 1. 动手前先读 V1 方案文档，了解全貌。
@@ -72,6 +84,7 @@
 8. **涉及 HuggingFace 模型下载** → 必须在 import 前 `os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")`，写在 `.env` 里无效（国内被墙）。
 9. 前端刷新保留对话：历史从后端 `/api/messages` 加载（服务端落库为准），不要用 localStorage。
 10. 每次完成/踩坑，把证据和坑记进下面的「经验教训」。
+11. GitHub 操作前确认 Clash 代理生效（git 全局代理 `127.0.0.1:7890`）；commit 前用 `git ls-files | grep -E '\.env$'` 自查敏感文件。
 
 ---
 
@@ -93,3 +106,6 @@
 - **Windows 中文路径下 `uvicorn --reload` 不可信**：`E:\时叙` 这类中文目录里，改 `.py` 后日志会打印 `Reloading...` 但 worker 实际不重载，服务还在跑旧逻辑，且**无报错**——排查半天才靠端到端测试发现。结论：后端一律不带 `--reload` 启动，改代码手动重启（2026-08-06）。
 - **three.js 相机忘了 `lookAt` → 数字人整个被视锥剔除、画面只有背景色**：VRM 模型 `position.y=-1.15` 下移后落在相机视野下方，而相机默认朝 `(0,0,-1)` 正前方。表现是 canvas 存在、render 每帧跑、模型加载成功，但 `drawElements` 调用为 0、画面空白。修复：`camera.lookAt(0,-0.36,0)` + fov 从 35 提到 60 + `vrm.scene.scale.setScalar(0.85)` 适配窄条 aspect。**教训：WebGL 里「画面空白」优先怀疑视锥剔除/相机朝向，别先怀疑加载**（2026-08-06）。
 - **chrome-devtools MCP 排查前端渲染的姿势**：Vue3 dev 模式组件的 `<script setup>` 变量全在 `el.__vueParentComponent.setupState`（活引用，非快照），可直读 `scene/camera/vrm/renderer` 实时状态；读 WebGL canvas 像素用 `preserveDrawingBuffer:true` 的独立 renderer 渲染同一 scene+camera（直接读原 canvas 的 `toDataURL`/`readPixels` 会因 `preserveDrawingBuffer:false` 读到空 buffer 造成误报）；WebGL 计数用 `navigate_page` 的 `initScript` patch `WebGL2RenderingContext.prototype.drawElements/clear`（2026-08-06）。
+- **GitHub 直连被墙**：`git push/ls-remote` 报 `Recv failure: Connection was reset`，git 无输出/无错即可能是空仓库连通成功。本机 Clash 代理在 `127.0.0.1:7890`，`git config --global http.proxy` 配了就走代理（2026-08-06）。
+- **Vite 中文路径不受影响**：Vite dev 对模块请求**实时编译**，改 `.vue`/`.ts` 后刷新页面即新代码——与 uvicorn 的 watch 机制不同，中文目录下 Vite 无需重启（2026-08-06）。
+- **数字人的难点不是渲染是观感**：渲染管线（相机/剔除/材质）都能修，但 three-vrm 的示例模型 `three-vrm-girl` 观感廉价、用户不接受。真做数字人优先找观感好的模型或 VRoid 自捏，技术方案（three-vrm + 面具表情联动）可复用（2026-08-06）。
