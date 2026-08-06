@@ -1,0 +1,10 @@
+node_modules/
+dist/
+backend/.venv/
+backend/venv/
+backend/.env
+backend/data/
+__pycache__/
+*.pyc
+.tmp_screenshots/
+frontend/tsconfig.tsbuildinfo
