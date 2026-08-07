@@ -15,6 +15,19 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE user_profile ADD COLUMN self_memory TEXT DEFAULT '{}'"
         )
+    if "behavior_profile" not in cols:
+        conn.execute(
+            "ALTER TABLE user_profile ADD COLUMN behavior_profile TEXT DEFAULT '{}'"
+        )
+    if "companion_settings" not in cols:
+        conn.execute(
+            "ALTER TABLE user_profile ADD COLUMN companion_settings TEXT DEFAULT '{}'"
+        )
+    anchor_cols = {r[1] for r in conn.execute("PRAGMA table_info(memory_anchors)")}
+    if "expires_at" not in anchor_cols:
+        conn.execute("ALTER TABLE memory_anchors ADD COLUMN expires_at TIMESTAMP")
+    if "confirmed_at" not in anchor_cols:
+        conn.execute("ALTER TABLE memory_anchors ADD COLUMN confirmed_at TIMESTAMP")
 
 
 def init_db() -> None:

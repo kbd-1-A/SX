@@ -1,9 +1,10 @@
-"""token 截断纯函数测试。
+"""router 纯函数测试。
 
-测 router.py 里的 estimate_tokens / truncate_history，不碰 DB 与 persona。
+测 router.py 里的 estimate_tokens / truncate_history / build_messages。
 """
 
-from app.agents.router import estimate_tokens, truncate_history
+import app.agents.router as router_mod
+from app.agents.router import build_messages, estimate_tokens, truncate_history
 
 
 def make(role: str, content: str) -> dict:
@@ -51,3 +52,82 @@ def test_truncate_single_over_limit_keeps_newest():
     out = truncate_history(history, max_tokens=5000)
     # 至少保留最新一条，即使它自身超限
     assert [m["content"] for m in out] == ["段" * 6000]
+
+
+def test_build_messages_does_not_duplicate_current_user(monkeypatch):
+    monkeypatch.setattr(router_mod, "load_persona", lambda mask: "core")
+    monkeypatch.setattr(router_mod, "format_self_memory", lambda: "self")
+    monkeypatch.setattr(router_mod, "format_behavior_profile", lambda: "behavior")
+    monkeypatch.setattr(router_mod, "format_recalled_anchors", lambda query: "anchors")
+    monkeypatch.setattr(
+        router_mod,
+        "get_messages",
+        lambda session_id, limit=200: [make("user", "今天好累")],
+    )
+
+    messages = build_messages(1, "今天好累")
+
+    assert [m for m in messages if m["role"] == "user"] == [
+        {"role": "user", "content": "今天好累"}
+    ]
+
+
+def test_build_messages_appends_user_when_not_yet_saved(monkeypatch):
+    monkeypatch.setattr(router_mod, "load_persona", lambda mask: "core")
+    monkeypatch.setattr(router_mod, "format_self_memory", lambda: "self")
+    monkeypatch.setattr(router_mod, "format_behavior_profile", lambda: "behavior")
+    monkeypatch.setattr(router_mod, "format_recalled_anchors", lambda query: "anchors")
+    monkeypatch.setattr(
+        router_mod,
+        "get_messages",
+        lambda session_id, limit=200: [make("assistant", "我在")],
+    )
+
+    messages = build_messages(1, "今天好累")
+
+    assert messages[-1] == {"role": "user", "content": "今天好累"}
+
+
+def test_build_messages_injects_behavior_profile(monkeypatch):
+    monkeypatch.setattr(router_mod, "load_persona", lambda mask: "core")
+    monkeypatch.setattr(router_mod, "format_self_memory", lambda: "self")
+    monkeypatch.setattr(router_mod, "format_behavior_profile", lambda: "behavior")
+    monkeypatch.setattr(router_mod, "format_recalled_anchors", lambda query: "anchors")
+    monkeypatch.setattr(router_mod, "get_messages", lambda session_id, limit=200: [])
+
+    messages = build_messages(1, "继续聊吧")
+
+    assert "behavior" in messages[0]["content"]
+
+
+def test_build_messages_strips_storage_fields_and_orphaned_assistant(monkeypatch):
+    monkeypatch.setattr(router_mod, "load_persona", lambda mask: "core")
+    monkeypatch.setattr(router_mod, "format_self_memory", lambda: "self")
+    monkeypatch.setattr(router_mod, "format_behavior_profile", lambda: "behavior")
+    monkeypatch.setattr(router_mod, "format_recalled_anchors", lambda query: "anchors")
+    monkeypatch.setattr(
+        router_mod,
+        "get_messages",
+        lambda session_id, limit=200: [
+            {
+                "id": 1,
+                "role": "assistant",
+                "content": "没有对应提问的旧回复",
+                "created_at": "2026-08-07T10:00:00",
+            },
+            {
+                "id": 2,
+                "role": "user",
+                "content": "我还在吗",
+                "created_at": "2026-08-07T10:01:00",
+            },
+        ],
+    )
+
+    messages = build_messages(1, "继续聊吧")
+
+    assert messages[1:] == [
+        {"role": "user", "content": "我还在吗"},
+        {"role": "user", "content": "继续聊吧"},
+    ]
+    assert all(set(message) <= {"role", "content"} for message in messages)

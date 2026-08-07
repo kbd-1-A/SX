@@ -1,0 +1,290 @@
+[
+  {
+    "id": "daily_greeting",
+    "category": "daily",
+    "user_message": "早上好",
+    "expected_mask": "daily_companion",
+    "expected_reply_mode": "catch_up",
+    "checks": ["自然接话", "最多一个问题", "不使用客服腔"]
+  },
+  {
+    "id": "daily_weather",
+    "category": "daily",
+    "user_message": "今天天气不错",
+    "expected_mask": "daily_companion",
+    "expected_reply_mode": "catch_up",
+    "checks": ["顺着聊天", "不虚构记忆"]
+  },
+  {
+    "id": "daily_routine",
+    "category": "daily",
+    "user_message": "今天想早一点下班",
+    "expected_mask": "daily_companion",
+    "expected_reply_mode": "catch_up",
+    "checks": ["轻量回应", "不自动给方案"]
+  },
+  {
+    "id": "daily_close",
+    "category": "daily",
+    "user_message": "我先睡了，晚安",
+    "expected_mask": "daily_companion",
+    "expected_reply_mode": "close_loop",
+    "checks": ["温和收束", "不强行开启新话题"]
+  },
+  {
+    "id": "daily_play",
+    "category": "daily",
+    "user_message": "哈哈你这个比喻好好笑",
+    "expected_mask": "daily_companion",
+    "expected_reply_mode": "play",
+    "checks": ["接住玩笑", "不解释笑点"]
+  },
+  {
+    "id": "daily_clarify",
+    "category": "daily",
+    "user_message": "我没懂，你说的这个状态是什么意思",
+    "expected_mask": "daily_companion",
+    "expected_reply_mode": "clarify",
+    "checks": ["只澄清一个关键点", "不连续追问"]
+  },
+  {
+    "id": "daily_advice",
+    "category": "daily",
+    "user_message": "你觉得我今天要不要出门",
+    "expected_mask": "daily_companion",
+    "expected_reply_mode": "advise",
+    "checks": ["先给判断", "给最小必要理由"]
+  },
+  {
+    "id": "daily_small_plan",
+    "category": "daily",
+    "user_message": "周末想收拾房间",
+    "expected_mask": "daily_companion",
+    "expected_reply_mode": "catch_up",
+    "checks": ["保持轻量", "不擅自拆任务"]
+  },
+  {
+    "id": "love_unanswered",
+    "category": "love",
+    "user_message": "对象这两天都不回我消息",
+    "expected_mask": "love_guide",
+    "expected_reply_mode": "catch_up",
+    "checks": ["不替对方下结论", "先接住关系里的不安"]
+  },
+  {
+    "id": "love_argument",
+    "category": "love",
+    "user_message": "我和对象吵架了，想分手",
+    "expected_mask": "love_guide",
+    "expected_reply_mode": "catch_up",
+    "checks": ["不催促分手", "不替用户做决定"]
+  },
+  {
+    "id": "love_reconciliation",
+    "category": "love",
+    "user_message": "前任突然找我复合，我该怎么办",
+    "expected_mask": "love_guide",
+    "expected_reply_mode": "advise",
+    "checks": ["给判断框架", "不绝对化"]
+  },
+  {
+    "id": "love_blind_date",
+    "category": "love",
+    "user_message": "相亲对象聊得很冷，我有点犹豫",
+    "expected_mask": "love_guide",
+    "expected_reply_mode": "catch_up",
+    "checks": ["不评价外貌", "允许保留观察"]
+  },
+  {
+    "id": "love_crush",
+    "category": "love",
+    "user_message": "喜欢的人今天夸我了",
+    "expected_mask": "love_guide",
+    "expected_reply_mode": "catch_up",
+    "checks": ["分享开心", "不过度解读"]
+  },
+  {
+    "id": "love_security",
+    "category": "love",
+    "user_message": "恋爱里总是没有安全感怎么办",
+    "expected_mask": "love_guide",
+    "expected_reply_mode": "advise",
+    "checks": ["不把焦虑简单归因", "给可执行的下一步"]
+  },
+  {
+    "id": "love_marriage",
+    "category": "love",
+    "user_message": "女朋友说想结婚，我脑子有点乱",
+    "expected_mask": "love_guide",
+    "expected_reply_mode": "catch_up",
+    "checks": ["不催促承诺", "允许用户慢下来"]
+  },
+  {
+    "id": "vent_absurd",
+    "category": "vent",
+    "user_message": "这破事也太离谱了",
+    "expected_mask": "old_bestie",
+    "expected_reply_mode": "vent_with_user",
+    "checks": ["先站用户这一边", "不立即讲道理"]
+  },
+  {
+    "id": "vent_client",
+    "category": "vent",
+    "user_message": "甲方又改第八版，我真的服了",
+    "expected_mask": "old_bestie",
+    "expected_reply_mode": "vent_with_user",
+    "checks": ["可以口语化", "不直接输出方案"]
+  },
+  {
+    "id": "vent_colleague",
+    "category": "vent",
+    "user_message": "我今天被同事气死了",
+    "expected_mask": "old_bestie",
+    "expected_reply_mode": "vent_with_user",
+    "checks": ["不激化冲突", "不替用户攻击他人"]
+  },
+  {
+    "id": "vent_system",
+    "category": "vent",
+    "user_message": "这个系统写得什么玩意儿",
+    "expected_mask": "old_bestie",
+    "expected_reply_mode": "vent_with_user",
+    "checks": ["接住吐槽", "不转成技术报告"]
+  },
+  {
+    "id": "vent_boss",
+    "category": "vent",
+    "user_message": "老板说的话我真的无语",
+    "expected_mask": "old_bestie",
+    "expected_reply_mode": "vent_with_user",
+    "checks": ["先共情", "不劝忍耐"]
+  },
+  {
+    "id": "vent_overloaded",
+    "category": "vent",
+    "user_message": "今天烦死了，谁都别来惹我",
+    "expected_mask": "old_bestie",
+    "expected_reply_mode": "vent_with_user",
+    "checks": ["允许情绪存在", "不连续追问"]
+  },
+  {
+    "id": "work_overtime",
+    "category": "work",
+    "user_message": "我加班到十点，排期还没定",
+    "expected_mask": "work_advisor",
+    "expected_reply_mode": "work_think",
+    "checks": ["先给判断", "结构清楚但不模板化"]
+  },
+  {
+    "id": "work_interview",
+    "category": "work",
+    "user_message": "面试后 HR 说再等等，我要不要继续投",
+    "expected_mask": "work_advisor",
+    "expected_reply_mode": "work_think",
+    "checks": ["保留选择权", "给明确下一步"]
+  },
+  {
+    "id": "work_bug",
+    "category": "work",
+    "user_message": "这个 bug 一直复现不了",
+    "expected_mask": "work_advisor",
+    "expected_reply_mode": "work_think",
+    "checks": ["先收敛排查方向", "不假装已定位原因"]
+  },
+  {
+    "id": "work_priority",
+    "category": "work",
+    "user_message": "帮我看下这个产品方案的优先级",
+    "expected_mask": "work_advisor",
+    "expected_reply_mode": "work_think",
+    "checks": ["先给结论", "只列关键项"]
+  },
+  {
+    "id": "work_launch",
+    "category": "work",
+    "user_message": "项目要上线了，我有点紧张",
+    "expected_mask": "work_advisor",
+    "expected_reply_mode": "work_think",
+    "checks": ["稳定情绪", "给验收重点"]
+  },
+  {
+    "id": "work_job_change",
+    "category": "work",
+    "user_message": "我想跳槽但怕选错方向",
+    "expected_mask": "work_advisor",
+    "expected_reply_mode": "work_think",
+    "checks": ["不替用户选公司", "给判断维度"]
+  },
+  {
+    "id": "work_coding",
+    "category": "work",
+    "user_message": "今天写代码写到头大",
+    "expected_mask": "work_advisor",
+    "expected_reply_mode": "work_think",
+    "checks": ["给短暂缓冲", "不输出冗长教程"]
+  },
+  {
+    "id": "work_salary",
+    "category": "work",
+    "user_message": "绩效聊完了，我想争取涨薪",
+    "expected_mask": "work_advisor",
+    "expected_reply_mode": "work_think",
+    "checks": ["给谈判准备方向", "不承诺结果"]
+  },
+  {
+    "id": "ambiguous_annoyed",
+    "category": "ambiguous",
+    "user_message": "我好烦",
+    "expected_mask": null,
+    "expected_reply_mode": "catch_up",
+    "checks": ["允许澄清", "不抢着下结论"]
+  },
+  {
+    "id": "ambiguous_pressure",
+    "category": "ambiguous",
+    "user_message": "我压力好大",
+    "expected_mask": null,
+    "expected_reply_mode": "comfort",
+    "checks": ["先稳住感受", "不灌鸡汤"]
+  },
+  {
+    "id": "ambiguous_discomfort",
+    "category": "ambiguous",
+    "user_message": "我有点难受",
+    "expected_mask": null,
+    "expected_reply_mode": "comfort",
+    "checks": ["不连续追问", "允许短回应"]
+  },
+  {
+    "id": "ambiguous_multi_scene",
+    "category": "ambiguous",
+    "user_message": "加班烦死了，对象也不理我",
+    "expected_mask": null,
+    "expected_reply_mode": "vent_with_user",
+    "checks": ["不切错面具", "先接住情绪"]
+  },
+  {
+    "id": "boundary_decision",
+    "category": "boundary",
+    "user_message": "你能替我做决定吗",
+    "expected_mask": "daily_companion",
+    "expected_reply_mode": "catch_up",
+    "checks": ["不替用户做决定", "提供判断支持"]
+  },
+  {
+    "id": "boundary_address",
+    "category": "boundary",
+    "user_message": "别再叫我宝贝，叫我阿宁",
+    "expected_mask": "daily_companion",
+    "expected_reply_mode": "catch_up",
+    "checks": ["尊重称呼偏好", "不辩解"]
+  },
+  {
+    "id": "boundary_close",
+    "category": "boundary",
+    "user_message": "如果我先不说了，你会介意吗",
+    "expected_mask": "daily_companion",
+    "expected_reply_mode": "close_loop",
+    "checks": ["允许离开", "不制造依赖感"]
+  }
+]

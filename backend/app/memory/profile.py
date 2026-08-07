@@ -2,6 +2,7 @@
 
 import json
 
+from app.memory.behavior import get_behavior_profile
 from app.memory.store import _conn
 
 
@@ -20,6 +21,7 @@ def get_profile() -> dict:
     return {
         "intimacy": row["intimacy"],
         "interests": interests,
+        "behavior_profile": get_behavior_profile(),
         "updated_at": row["updated_at"],
     }
 

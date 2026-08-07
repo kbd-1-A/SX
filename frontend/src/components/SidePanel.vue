@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onMounted, ref, watch } from 'vue'
 import { NButton, NSpace, NTag, NEmpty } from 'naive-ui'
+import CompanionPanel from './CompanionPanel.vue'
 import { useChatStore } from '../stores/chat'
 
 const chat = useChatStore()
@@ -12,37 +13,30 @@ const maskNames: Record<string, string> = {
   work_advisor: '工作参谋',
 }
 
+const replyModeNames: Record<string, string> = {
+  catch_up: '日常接话',
+  vent_with_user: '一起吐槽',
+  comfort: '低落陪伴',
+  advise: '给出建议',
+  work_think: '工作参谋',
+  play: '轻松玩梗',
+  clarify: '自然澄清',
+  close_loop: '温和收束',
+}
+
 interface Profile {
   intimacy: number
   interests: Record<string, number>
   updated_at: string | null
 }
 
-interface DayItem {
-  date: string
-  first: string
-}
-
 const profile = ref<Profile>({ intimacy: 0, interests: {}, updated_at: null })
-const daily = ref<DayItem[]>([])
 
 async function load() {
   const res = await fetch('/api/profile')
   if (res.ok) profile.value = await res.json()
 
-  // 记忆时间线：V1 用消息按天聚合，显示"日期 + 该天第一条"
-  const mres = await fetch('/api/messages?limit=200')
-  if (mres.ok) {
-    const msgs: any[] = await mres.json()
-    const byDay = new Map<string, string>()
-    for (const m of msgs) {
-      const d = m.created_at ? m.created_at.slice(0, 10) : ''
-      if (d && !byDay.has(d)) byDay.set(d, m.content)
-    }
-    daily.value = [...byDay.entries()]
-      .slice(0, 7)
-      .map(([date, first]) => ({ date, first }))
-  }
+  await chat.loadTasks()
 }
 
 async function bump() {
@@ -51,6 +45,7 @@ async function bump() {
 }
 
 onMounted(load)
+watch(() => chat.messages.length, load)
 </script>
 
 <template>
@@ -58,6 +53,11 @@ onMounted(load)
     <h3 style="margin: 0; font-size: 15px">当前面具</h3>
     <n-tag type="warning" size="small" :bordered="false">
       {{ maskNames[chat.currentMask] || '同行者' }}
+    </n-tag>
+
+    <h3 style="margin: 0; font-size: 15px">本轮动作</h3>
+    <n-tag type="success" size="small" :bordered="false">
+      {{ replyModeNames[chat.currentReplyMode] || '日常接话' }}
     </n-tag>
 
     <h3 style="margin: 0; font-size: 15px">今日心情</h3>
@@ -83,15 +83,32 @@ onMounted(load)
       <n-button size="small" @click="bump">手动 +1 亲密度</n-button>
     </n-space>
 
-    <h3 style="margin: 0; font-size: 15px">记忆时间线</h3>
+    <CompanionPanel :refresh-key="chat.messages.length" />
+
+    <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px">
+      <h3 style="margin: 0; font-size: 15px">记忆时间线</h3>
+      <n-button size="small" secondary type="primary" @click="chat.newTask">新开任务</n-button>
+    </div>
     <n-space vertical size="small">
-      <div v-if="!daily.length">
-        <n-empty description="还没有对话记录" size="small" />
+      <div v-if="!chat.tasks.length">
+        <n-empty description="还没有任务" size="small" />
       </div>
-      <div v-for="d in daily" :key="d.date">
-        <div style="font-size: 12px; color: #999">{{ d.date }}</div>
+      <div
+        v-for="task in chat.tasks"
+        :key="task.id"
+        :style="{
+          padding: '8px 10px',
+          borderRadius: '8px',
+          cursor: 'pointer',
+          background: task.id === chat.currentSessionId ? '#fff7e6' : 'transparent',
+        }"
+        @click="chat.switchTask(task.id)"
+      >
+        <div style="font-size: 12px; color: #999">
+          #{{ task.id }} · {{ task.last_message_at ? task.last_message_at.slice(0, 16) : '' }}
+        </div>
         <div style="font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">
-          {{ d.first }}
+          {{ task.preview }}
         </div>
       </div>
     </n-space>

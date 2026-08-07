@@ -4,11 +4,31 @@
 构造 prompt 时以数据库历史为准，禁止模型凭训练数据编造。
 """
 
-from openai import AsyncOpenAI
+import asyncio
+import logging
 
+from openai import APIConnectionError, APIError, APITimeoutError, AsyncOpenAI, RateLimitError
+
+from app.agents.errors import (
+    AgentConfigurationError,
+    AgentEmptyResponseError,
+    AgentProviderError,
+    AgentTimeoutError,
+)
 from app.agents.mask import DEFAULT_MASK, MASKS, detect_mask_by_keywords
 from app.agents.persona import load_persona
-from app.config import DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL, DEEPSEEK_MODEL
+from app.agents.reply_mode import format_reply_mode
+from app.agents.tone_guard import format_tone_rules
+from app.config import (
+    DEEPSEEK_API_KEY,
+    DEEPSEEK_BASE_URL,
+    DEEPSEEK_MAX_RETRIES,
+    DEEPSEEK_MODEL,
+    DEEPSEEK_TIMEOUT_SECONDS,
+    MASK_CLASSIFY_TIMEOUT_SECONDS,
+)
+from app.memory.anchors import format_recalled_anchors
+from app.memory.behavior import format_behavior_profile
 from app.memory.self import format_self_memory
 from app.memory.store import get_messages
 
@@ -16,12 +36,18 @@ from app.memory.store import get_messages
 MAX_HISTORY_TOKENS = 5000
 
 _client: AsyncOpenAI | None = None
+logger = logging.getLogger(__name__)
 
 
 def get_client() -> AsyncOpenAI:
     global _client
     if _client is None:
-        _client = AsyncOpenAI(api_key=DEEPSEEK_API_KEY, base_url=DEEPSEEK_BASE_URL)
+        _client = AsyncOpenAI(
+            api_key=DEEPSEEK_API_KEY,
+            base_url=DEEPSEEK_BASE_URL,
+            timeout=DEEPSEEK_TIMEOUT_SECONDS,
+            max_retries=DEEPSEEK_MAX_RETRIES,
+        )
     return _client
 
 
@@ -59,28 +85,30 @@ async def llm_classify(text: str) -> str:
     if not DEEPSEEK_API_KEY:
         return DEFAULT_MASK
     try:
-        resp = await get_client().chat.completions.create(
-            model=DEEPSEEK_MODEL,
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "判断用户这句话属于哪个场景，只回一个词：\n"
-                        "love_guide=聊感情/亲密关系\n"
-                        "old_bestie=吐槽/发泄/抱怨\n"
-                        "work_advisor=工作/职场/技术\n"
-                        "daily_companion=日常闲聊\n"
-                        "拿不准回 daily_companion。"
-                    ),
-                },
-                {"role": "user", "content": text},
-            ],
-            max_tokens=8,
-            temperature=0,
-        )
+        async with asyncio.timeout(MASK_CLASSIFY_TIMEOUT_SECONDS):
+            resp = await get_client().chat.completions.create(
+                model=DEEPSEEK_MODEL,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "判断用户这句话属于哪个场景，只回一个词：\n"
+                            "love_guide=聊感情/亲密关系\n"
+                            "old_bestie=吐槽/发泄/抱怨\n"
+                            "work_advisor=工作/职场/技术\n"
+                            "daily_companion=日常闲聊\n"
+                            "拿不准回 daily_companion。"
+                        ),
+                    },
+                    {"role": "user", "content": text},
+                ],
+                max_tokens=8,
+                temperature=0,
+            )
         label = (resp.choices[0].message.content or "").strip().lower()
         return label if label in MASKS else DEFAULT_MASK
-    except Exception:
+    except (asyncio.TimeoutError, APIError, OSError) as exc:
+        logger.info("mask_classification_fallback reason=%s", type(exc).__name__)
         return DEFAULT_MASK
 
 
@@ -93,30 +121,98 @@ async def choose_mask(user_msg: str) -> str:
 
 
 def build_messages(
-    session_id: int, user_msg: str, mask: str = DEFAULT_MASK
+    session_id: int,
+    user_msg: str,
+    mask: str = DEFAULT_MASK,
+    reply_mode: str = "catch_up",
 ) -> list[dict]:
-    system = load_persona(mask) + "\n\n# 关于我们\n" + format_self_memory()
+    system = "\n\n".join(
+        [
+            load_persona(mask),
+            format_reply_mode(reply_mode),
+            format_tone_rules(reply_mode),
+            "# 关于我们\n" + format_self_memory(),
+            format_behavior_profile(),
+            "# 相关记忆\n" + format_recalled_anchors(user_msg),
+        ]
+    )
     messages: list[dict] = [{"role": "system", "content": system}]
-    history = truncate_history(get_messages(session_id, limit=200), MAX_HISTORY_TOKENS)
+    history = _normalize_history(get_messages(session_id, limit=200))
+    history = truncate_history(history, MAX_HISTORY_TOKENS)
+    history = _drop_orphaned_assistant_prefix(history)
     messages.extend(history)
-    messages.append({"role": "user", "content": user_msg})
+    # chat.py 会先把当前用户消息落库。若历史最后一条已经是当前消息，
+    # 不再 append 一次，避免模型听见同一句两遍。
+    if not (
+        history
+        and history[-1].get("role") == "user"
+        and history[-1].get("content") == user_msg
+    ):
+        messages.append({"role": "user", "content": user_msg})
     return messages
 
 
+def _normalize_history(history: list[dict]) -> list[dict]:
+    """只向模型发送合法 role/content，移除数据库字段和空消息。"""
+    normalized: list[dict] = []
+    for message in history:
+        role = message.get("role")
+        content = message.get("content")
+        if role not in {"user", "assistant"} or not isinstance(content, str):
+            continue
+        content = content.strip()
+        if content:
+            normalized.append({"role": role, "content": content})
+    return normalized
+
+
+def _drop_orphaned_assistant_prefix(history: list[dict]) -> list[dict]:
+    """避免 token 截断后让模型先看到一段没有提问来源的 assistant 回复。"""
+    start = 0
+    while start < len(history) and history[start]["role"] == "assistant":
+        start += 1
+    return history[start:]
+
+
 async def stream_reply(
-    session_id: int, user_msg: str, mask: str = DEFAULT_MASK
+    session_id: int,
+    user_msg: str,
+    mask: str = DEFAULT_MASK,
+    reply_mode: str = "catch_up",
 ):
     """异步生成回复文本，逐块 yield。"""
     if not DEEPSEEK_API_KEY:
-        raise RuntimeError("未配置 DEEPSEEK_API_KEY，请在 backend/.env 里填写")
-    stream = await get_client().chat.completions.create(
-        model=DEEPSEEK_MODEL,
-        messages=build_messages(session_id, user_msg, mask=mask),
-        stream=True,
-    )
-    async for chunk in stream:
-        if not chunk.choices:
-            continue
-        delta = chunk.choices[0].delta
-        if delta and delta.content:
-            yield delta.content
+        raise AgentConfigurationError()
+
+    yielded = False
+    try:
+        stream = await get_client().chat.completions.create(
+            model=DEEPSEEK_MODEL,
+            messages=build_messages(
+                session_id,
+                user_msg,
+                mask=mask,
+                reply_mode=reply_mode,
+            ),
+            stream=True,
+        )
+        async for chunk in stream:
+            if not chunk.choices:
+                continue
+            delta = chunk.choices[0].delta
+            if delta and delta.content:
+                yielded = True
+                yield delta.content
+    except AgentConfigurationError:
+        raise
+    except (asyncio.TimeoutError, APITimeoutError) as exc:
+        raise AgentTimeoutError(type(exc).__name__) from exc
+    except (APIConnectionError, RateLimitError, APIError, OSError) as exc:
+        logger.warning("agent_provider_error reason=%s", type(exc).__name__)
+        raise AgentProviderError(type(exc).__name__) from exc
+    except Exception as exc:
+        logger.exception("agent_stream_unexpected_error reason=%s", type(exc).__name__)
+        raise AgentProviderError(type(exc).__name__) from exc
+
+    if not yielded:
+        raise AgentEmptyResponseError()

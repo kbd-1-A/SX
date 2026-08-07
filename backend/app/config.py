@@ -16,6 +16,12 @@ load_dotenv(BASE_DIR / ".env")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
 DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+DEEPSEEK_TIMEOUT_SECONDS = float(os.getenv("DEEPSEEK_TIMEOUT_SECONDS", "45"))
+DEEPSEEK_MAX_RETRIES = int(os.getenv("DEEPSEEK_MAX_RETRIES", "1"))
+MASK_CLASSIFY_TIMEOUT_SECONDS = float(
+    os.getenv("MASK_CLASSIFY_TIMEOUT_SECONDS", "5")
+)
+MAX_USER_MESSAGE_CHARS = int(os.getenv("MAX_USER_MESSAGE_CHARS", "4000"))
 
 PORT = int(os.getenv("PORT", "8000"))
 

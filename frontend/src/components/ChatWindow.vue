@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { nextTick, ref, watch } from 'vue'
-import { NButton, NInput, NLayout, NLayoutHeader, NLayoutFooter, NTag } from 'naive-ui'
+import { NAlert, NButton, NInput, NLayout, NLayoutHeader, NLayoutFooter, NTag } from 'naive-ui'
 import { useChatStore } from '../stores/chat'
 
 const chat = useChatStore()
@@ -20,8 +20,14 @@ watch(
 function onSend() {
   const text = input.value.trim()
   if (!text) return
-  chat.send(text)
-  input.value = ''
+  if (chat.send(text)) input.value = ''
+}
+
+const statusNames: Record<string, string> = {
+  connecting: '连接中',
+  online: '在线',
+  reconnecting: '重连中',
+  offline: '离线',
 }
 </script>
 
@@ -30,8 +36,12 @@ function onSend() {
     <n-layout-header bordered style="padding: 12px 24px">
       <div style="display: flex; align-items: center; gap: 12px">
         <h2 style="margin: 0; font-size: 18px">时叙 · 你的陪伴 Agent</h2>
-        <n-tag :type="chat.connected ? 'success' : 'error'" size="small" :bordered="false">
-          {{ chat.connected ? '在线' : '离线' }}
+        <n-tag
+          :type="chat.connected ? 'success' : chat.status === 'reconnecting' ? 'warning' : 'error'"
+          size="small"
+          :bordered="false"
+        >
+          {{ statusNames[chat.status] || '离线' }}
         </n-tag>
       </div>
     </n-layout-header>
@@ -72,14 +82,22 @@ function onSend() {
     </div>
 
     <n-layout-footer bordered style="padding: 16px 24px">
-      <div style="max-width: 860px; margin: 0 auto; display: flex; gap: 12px">
+      <div style="max-width: 860px; margin: 0 auto; display: flex; flex-direction: column; gap: 10px">
+        <n-alert v-if="chat.lastError" type="warning" :show-icon="false">
+          {{ chat.lastError }}
+        </n-alert>
+        <div style="display: flex; gap: 12px">
         <n-input
           v-model:value="input"
           placeholder="想说什么就说…"
           size="large"
+          :maxlength="4000"
+          :disabled="chat.isStreaming"
           @keydown.enter.prevent="onSend"
         />
-        <n-button type="primary" size="large" @click="onSend">发送</n-button>
+          <n-button v-if="chat.isStreaming" size="large" @click="chat.stop">停止</n-button>
+          <n-button type="primary" size="large" :disabled="chat.isStreaming" @click="onSend">发送</n-button>
+        </div>
       </div>
     </n-layout-footer>
   </n-layout>

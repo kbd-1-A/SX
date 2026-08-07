@@ -92,6 +92,16 @@ def add_nickname(name: str) -> bool:
     return True
 
 
+def remove_nickname(name: str) -> bool:
+    """删除用户不希望继续保留的历史称呼。"""
+    data = _load()
+    if name not in data["nicknames"]:
+        return False
+    data["nicknames"] = [nickname for nickname in data["nicknames"] if nickname != name]
+    _save(data)
+    return True
+
+
 def add_mask_milestone(mask: str) -> bool:
     """面具场景首次出现时记里程碑；已记过返回 False。"""
     label = _MASK_LABELS.get(mask)

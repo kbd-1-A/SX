@@ -8,6 +8,7 @@ from app.memory.self import (
     extract_nickname,
     format_self_memory,
     get_self_memory,
+    remove_nickname,
 )
 
 
@@ -35,6 +36,13 @@ def test_add_nickname_dedup(tmp_db):
     assert add_nickname("小叙") is True
     assert add_nickname("小叙") is False
     assert get_self_memory()["nicknames"] == ["小叙"]
+
+
+def test_remove_nickname(tmp_db):
+    add_nickname("小叙")
+    assert remove_nickname("小叙") is True
+    assert get_self_memory()["nicknames"] == []
+    assert remove_nickname("小叙") is False
 
 
 def test_add_mask_milestone_once(tmp_db):

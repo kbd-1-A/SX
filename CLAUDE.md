@@ -58,6 +58,16 @@
 - **3D 数字人做了又拆**：VrmAvatar（three-vrm）渲染跑通、相机 bug 已修，但用户对 `three-vrm-girl.vrm` 模型观感不满意，已从界面移除（`VrmAvatar.vue`/`maskVrm.ts`/模型文件保留，方案待定）
 - **已提交 GitHub**：`kbd-1-A/SX`，master 分支，51 文件（见「远程仓库与代理」）
 
+### V2 进展（拟人化聊天内核，2026-08-07）
+- **已启动 V2「活人感对话内核」**：方案保存在 `E:\时序-txt\时叙_V2拟人化聊天方案.md`。
+- **已修复当前用户消息重复注入**：用户消息先落库后，`build_messages()` 会检测历史最后一条，避免同一句再 append 一次。
+- **新增 reply_mode 对话动作层**：在面具之外判断本轮该「日常接话 / 一起吐槽 / 低落陪伴 / 给建议 / 工作参谋 / 玩梗 / 澄清 / 收束」，让模型知道这一轮该做什么。
+- **新增 tone_guard**：把“少套话、短回复、少列表、记忆引用必须有证据”等去 AI 味规则注入 prompt，并提供可测试扫描函数。
+- **新增 memory_anchors 结构化关系锚点**：先不用向量库，记录高置信、可追溯的用户事实/偏好/未完事项；每条锚点带 `source_message_id`。
+- **前端聊天可靠性增强**：连接状态区分连接中/在线/重连中/离线；断线发送不清空输入；流式回复可停止；侧栏显示本轮动作和长期记忆锚点。
+- **新增“新开任务 / 记忆时间线”**：`sessions` 从单会话升级为任务列表；新增 `GET /api/sessions`、`POST /api/sessions`；`/api/messages` 与 `/ws/chat` 支持 `session_id`；前端侧栏可新开任务并切换独立对话时间线。
+- 验证：后端 `45 passed`；前端 `7 passed`；`npm run build` 通过；浏览器页面检查通过；后端已手动重启到 `127.0.0.1:8000`。
+
 ### 代码结构与运行
 - **灵魂唯一来源**：`backend/persona/shisu.md`——改它 = 改时叙性格，前后端都以它为准
 - 人格分层：`persona/shisu.md`（核心自我）+ `persona/masks/`（4 面具表达层）；路由在 `app/agents/mask.py`（规则词表 + LLM 兜底）
@@ -109,3 +119,4 @@
 - **GitHub 直连被墙**：`git push/ls-remote` 报 `Recv failure: Connection was reset`，git 无输出/无错即可能是空仓库连通成功。本机 Clash 代理在 `127.0.0.1:7890`，`git config --global http.proxy` 配了就走代理（2026-08-06）。
 - **Vite 中文路径不受影响**：Vite dev 对模块请求**实时编译**，改 `.vue`/`.ts` 后刷新页面即新代码——与 uvicorn 的 watch 机制不同，中文目录下 Vite 无需重启（2026-08-06）。
 - **数字人的难点不是渲染是观感**：渲染管线（相机/剔除/材质）都能修，但 three-vrm 的示例模型 `three-vrm-girl` 观感廉价、用户不接受。真做数字人优先找观感好的模型或 VRoid 自捏，技术方案（three-vrm + 面具表情联动）可复用（2026-08-06）。
+- **PowerShell 管道给 Python stdin 传中文可能导致测试文本乱码**：用 `@'...'@ | python -` 跑内联脚本时，中文字符串可能在 Python 侧变成问号，导致端到端测试写入乱码消息、记忆抽取不命中。验证中文 WebSocket/抽取逻辑时，用 Unicode escape 构造字符串，或写入 UTF-8 测试文件后运行；人工测试写入真实 SQLite 后要精确清理测试消息和记忆锚点（2026-08-07）。
