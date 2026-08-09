@@ -1,8 +1,21 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { NAlert, NButton, NEmpty, NInput, NSelect, NSpace, NTag, useNotification } from 'naive-ui'
+import { onMounted, ref, watch } from 'vue'
+import {
+  NAlert,
+  NButton,
+  NDatePicker,
+  NEmpty,
+  NInput,
+  NSelect,
+  NSpace,
+  NSwitch,
+  NTag,
+  useNotification,
+} from 'naive-ui'
+import { useChatStore } from '../stores/chat'
 
-const props = defineProps<{ refreshKey?: number }>()
+const props = defineProps<{ interactionKey?: number }>()
+const chat = useChatStore()
 
 type Frequency = 'quiet' | 'normal' | 'active'
 type AlertKind = 'default' | 'info' | 'success' | 'warning' | 'error'
@@ -24,11 +37,18 @@ interface CarePoint {
   created_at: string
 }
 
+const enabled = ref(true)
 const frequency = ref<Frequency>('normal')
 const followUps = ref<FollowUp[]>([])
 const carePoints = ref<CarePoint[]>([])
 const visibleAlerts = ref<CarePoint[]>([])
 const newFollowUpTitle = ref('')
+const newFollowUpDueAt = ref<number | null>(null)
+const newFollowUpImportance = ref(2)
+const editingFollowUpId = ref<number | null>(null)
+const editTitle = ref('')
+const editDueAt = ref<number | null>(null)
+const editImportance = ref(2)
 const loading = ref(false)
 const actionError = ref('')
 const notificationPermission = ref<'default' | 'granted' | 'denied' | 'unsupported'>('unsupported')
@@ -44,6 +64,22 @@ const importanceNames: Record<number, string> = {
   1: '普通',
   2: '重要',
   3: '优先',
+}
+const importanceOptions = [
+  { label: '普通', value: 1 },
+  { label: '重要', value: 2 },
+  { label: '优先', value: 3 },
+]
+
+function toApiDateTime(value: number | null): string | undefined {
+  if (value === null) return undefined
+  const date = new Date(value)
+  const pad = (part: number) => String(part).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:00`
+}
+
+function fromApiDateTime(value: string | null): number | null {
+  return value ? new Date(value.replace(' ', 'T')).getTime() : null
 }
 
 function syncNotificationPermission() {
@@ -75,7 +111,13 @@ function dismissAlert(id: number) {
   visibleAlerts.value = visibleAlerts.value.filter((point) => point.id !== id)
 }
 
+function clearVisibleAlerts() {
+  visibleAlerts.value = []
+  notification.destroyAll()
+}
+
 function announce(points: CarePoint[]) {
+  chat.receiveProactiveMessages(points)
   for (const point of points) {
     if (visibleAlerts.value.some((existing) => existing.id === point.id)) continue
     visibleAlerts.value.unshift(point)
@@ -83,7 +125,7 @@ function announce(points: CarePoint[]) {
       title: '时叙提醒你',
       content: point.content,
       type: alertType(point),
-      duration: 0,
+      duration: 8000,
     })
     if (notificationPermission.value === 'granted') {
       try {
@@ -98,17 +140,22 @@ function announce(points: CarePoint[]) {
   }
 }
 
-async function load() {
+async function load(checkForReminders = false) {
   loading.value = true
   actionError.value = ''
   try {
-    const response = await fetch('/api/companion/overview')
+    const response = await fetch(
+      checkForReminders ? '/api/companion/check-in' : '/api/companion/overview',
+      { method: checkForReminders ? 'POST' : 'GET' },
+    )
     if (!response.ok) throw new Error('companion_load_failed')
     const data = await response.json()
+    enabled.value = data.settings.enabled !== false
     frequency.value = data.settings.frequency
     followUps.value = data.follow_ups || []
     carePoints.value = data.care_points || []
-    announce(data.new_care_points || [])
+    if (checkForReminders) announce(data.new_care_points || [])
+    if (!enabled.value) clearVisibleAlerts()
   } catch {
     actionError.value = '主动陪伴暂时没有连上，稍后会再试。'
   } finally {
@@ -132,21 +179,82 @@ async function updateFrequency(value: string | number | null) {
   }
 }
 
+async function updateEnabled(value: boolean) {
+  actionError.value = ''
+  try {
+    const response = await fetch('/api/companion/settings', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: value }),
+    })
+    if (!response.ok) throw new Error('companion_enabled_update_failed')
+    enabled.value = (await response.json()).enabled
+    if (enabled.value) await load(true)
+    else clearVisibleAlerts()
+  } catch {
+    actionError.value = '主动陪伴开关暂时没能更新。'
+  }
+}
+
 async function addFollowUp() {
   const title = newFollowUpTitle.value.trim()
   if (!title) return
   actionError.value = ''
   try {
+    const payload: Record<string, unknown> = {
+      title,
+      importance: newFollowUpImportance.value,
+    }
+    const dueAt = toApiDateTime(newFollowUpDueAt.value)
+    if (dueAt) payload.due_at = dueAt
     const response = await fetch('/api/companion/follow-ups', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title, importance: 2 }),
+      body: JSON.stringify(payload),
     })
     if (!response.ok) throw new Error('follow_up_create_failed')
     newFollowUpTitle.value = ''
+    newFollowUpDueAt.value = null
+    newFollowUpImportance.value = 2
     await load()
   } catch {
     actionError.value = '这件待跟进事项暂时没能记下。'
+  }
+}
+
+function startEditing(item: FollowUp) {
+  editingFollowUpId.value = item.id
+  editTitle.value = item.title
+  editDueAt.value = fromApiDateTime(item.due_at)
+  editImportance.value = item.importance
+}
+
+function cancelEditing() {
+  editingFollowUpId.value = null
+}
+
+async function saveEditing(item: FollowUp) {
+  const title = editTitle.value.trim()
+  if (!title) return
+  actionError.value = ''
+  try {
+    const payload: Record<string, unknown> = {
+      title,
+      importance: editImportance.value,
+    }
+    const dueAt = toApiDateTime(editDueAt.value)
+    if (dueAt) payload.due_at = dueAt
+    else payload.clear_due_at = true
+    const response = await fetch(`/api/companion/follow-ups/${item.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    if (!response.ok) throw new Error('follow_up_update_failed')
+    editingFollowUpId.value = null
+    await load()
+  } catch {
+    actionError.value = '这件事项暂时没能更新。'
   }
 }
 
@@ -169,30 +277,36 @@ function dueLabel(item: FollowUp) {
   return item.due_at ? `时间：${item.due_at.slice(0, 16)}` : '等你方便时再继续'
 }
 
-let timer: number | null = null
 onMounted(() => {
+  notification.destroyAll()
   syncNotificationPermission()
   load()
-  // 15 秒一次，避免提醒时间刚到却要等近一分钟才出现。
-  timer = window.setInterval(load, 15_000)
 })
-onBeforeUnmount(() => {
-  if (timer !== null) window.clearInterval(timer)
-})
-watch(() => props.refreshKey, load)
+watch(
+  () => props.interactionKey,
+  (value, previous) => {
+    if (value && value !== previous) load(true)
+  },
+)
 </script>
 
 <template>
   <section style="display: flex; flex-direction: column; gap: 10px">
     <div style="display: flex; align-items: center; justify-content: space-between; gap: 10px">
       <h3 style="margin: 0; font-size: 15px">时叙在惦记</h3>
-      <n-button size="tiny" :loading="loading" @click="load">刷新</n-button>
+      <n-button size="tiny" :loading="loading" @click="() => load()">刷新</n-button>
+    </div>
+
+    <div style="display: flex; align-items: center; justify-content: space-between; gap: 10px">
+      <span style="font-size: 13px">主动陪伴</span>
+      <n-switch :value="enabled" size="small" @update:value="updateEnabled" />
     </div>
 
     <n-select
       :value="frequency"
       size="small"
       :options="frequencyOptions"
+      :disabled="!enabled"
       @update:value="updateFrequency"
     />
 
@@ -238,20 +352,54 @@ watch(() => props.refreshKey, load)
         />
         <n-button size="small" type="primary" @click="addFollowUp">记下</n-button>
       </div>
+      <div style="display: grid; grid-template-columns: minmax(0, 1fr) 80px; gap: 6px">
+        <n-date-picker
+          v-model:value="newFollowUpDueAt"
+          type="datetime"
+          size="small"
+          clearable
+          placeholder="选择提醒时间"
+        />
+        <n-select
+          v-model:value="newFollowUpImportance"
+          size="small"
+          :options="importanceOptions"
+        />
+      </div>
       <n-empty v-if="!followUps.length" description="暂时没有需要惦记的事" size="small" />
       <div
         v-for="item in followUps"
         :key="item.id"
         style="padding: 8px 0; border-bottom: 1px solid #eee"
       >
-        <div style="font-size: 13px; line-height: 1.5">{{ item.title }}</div>
-        <div style="margin-top: 6px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px">
-          <n-tag size="tiny" :type="item.importance >= 3 ? 'error' : item.importance === 2 ? 'warning' : 'default'">
-            {{ importanceNames[item.importance] }}
-          </n-tag>
-          <span style="font-size: 11px; color: #999">{{ dueLabel(item) }}</span>
-          <n-button size="tiny" @click="completeFollowUp(item)">完成</n-button>
-        </div>
+        <template v-if="editingFollowUpId === item.id">
+          <div style="display: flex; flex-direction: column; gap: 6px">
+            <n-input v-model:value="editTitle" size="small" :maxlength="120" />
+            <n-date-picker
+              v-model:value="editDueAt"
+              type="datetime"
+              size="small"
+              clearable
+              placeholder="选择提醒时间"
+            />
+            <n-select v-model:value="editImportance" size="small" :options="importanceOptions" />
+            <div style="display: flex; justify-content: flex-end; gap: 6px">
+              <n-button size="tiny" @click="cancelEditing">取消</n-button>
+              <n-button size="tiny" type="primary" @click="saveEditing(item)">保存</n-button>
+            </div>
+          </div>
+        </template>
+        <template v-else>
+          <div style="font-size: 13px; line-height: 1.5">{{ item.title }}</div>
+          <div style="margin-top: 6px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px">
+            <n-tag size="tiny" :type="item.importance >= 3 ? 'error' : item.importance === 2 ? 'warning' : 'default'">
+              {{ importanceNames[item.importance] }}
+            </n-tag>
+            <span style="font-size: 11px; color: #999">{{ dueLabel(item) }}</span>
+            <n-button size="tiny" @click="startEditing(item)">编辑</n-button>
+            <n-button size="tiny" @click="completeFollowUp(item)">完成</n-button>
+          </div>
+        </template>
       </div>
     </div>
 

@@ -11,8 +11,9 @@ from app.memory.anchors import (
 )
 from app.memory.companion import (
     create_follow_up,
+    extract_follow_up_candidates,
     get_companion_overview,
-    set_companion_frequency,
+    set_companion_settings,
     update_follow_up,
 )
 from app.memory.profile import bump_intimacy, get_profile
@@ -37,7 +38,8 @@ class AnchorUpdatePayload(BaseModel):
 
 
 class CompanionSettingsPayload(BaseModel):
-    frequency: str
+    frequency: str | None = None
+    enabled: bool | None = None
 
 
 class FollowUpCreatePayload(BaseModel):
@@ -87,22 +89,44 @@ def api_companion_overview():
     return get_companion_overview()
 
 
+@router.post("/companion/check-in")
+def api_companion_check_in():
+    """Evaluate reminders only after an explicit user interaction."""
+    return get_companion_overview(evaluate=True)
+
+
 @router.patch("/companion/settings")
 def api_companion_settings(payload: CompanionSettingsPayload):
     try:
-        return set_companion_frequency(payload.frequency)
+        return set_companion_settings(
+            frequency=payload.frequency,
+            enabled=payload.enabled,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/companion/follow-ups")
 def api_create_follow_up(payload: FollowUpCreatePayload):
+    fields = payload.model_fields_set
+    inferred = extract_follow_up_candidates(payload.title)
+    candidate = inferred[0] if inferred else None
+    category = payload.category
+    due_at = payload.due_at
+    importance = payload.importance
+    if candidate:
+        if "category" not in fields:
+            category = candidate["category"]
+        if "due_at" not in fields:
+            due_at = candidate["due_at"]
+        if "importance" not in fields:
+            importance = candidate["importance"]
     try:
         follow_up = create_follow_up(
             title=payload.title,
-            category=payload.category,
-            due_at=payload.due_at,
-            importance=payload.importance,
+            category=category,
+            due_at=due_at,
+            importance=importance,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

@@ -3,12 +3,24 @@
 测 router.py 里的 estimate_tokens / truncate_history / build_messages。
 """
 
+from datetime import datetime, timezone
+
 import app.agents.router as router_mod
-from app.agents.router import build_messages, estimate_tokens, truncate_history
+from app.agents.router import (
+    build_messages,
+    estimate_tokens,
+    format_message_time,
+    format_runtime_context,
+    truncate_history,
+)
 
 
 def make(role: str, content: str) -> dict:
     return {"role": role, "content": content}
+
+
+def make_stored(role: str, content: str, created_at: str = "2026-08-08 09:08:13") -> dict:
+    return {"role": role, "content": content, "created_at": created_at}
 
 
 def test_estimate_tokens_chinese():
@@ -23,6 +35,11 @@ def test_estimate_tokens_ascii():
 
 def test_estimate_tokens_empty():
     assert estimate_tokens("") == 0
+
+
+def test_format_message_time_marks_sqlite_timestamp_as_utc():
+    assert format_message_time("2026-08-08 09:08:13") is not None
+    assert format_message_time("not-a-date") is None
 
 
 def test_truncate_below_limit_keeps_all():
@@ -62,14 +79,15 @@ def test_build_messages_does_not_duplicate_current_user(monkeypatch):
     monkeypatch.setattr(
         router_mod,
         "get_messages",
-        lambda session_id, limit=200: [make("user", "今天好累")],
+        lambda session_id, limit=200: [make_stored("user", "今天好累")],
     )
 
     messages = build_messages(1, "今天好累")
+    user_messages = [m for m in messages if m["role"] == "user"]
 
-    assert [m for m in messages if m["role"] == "user"] == [
-        {"role": "user", "content": "今天好累"}
-    ]
+    assert len(user_messages) == 1
+    assert user_messages[0]["content"].endswith("今天好累")
+    assert "[消息时间：" in user_messages[0]["content"]
 
 
 def test_build_messages_appends_user_when_not_yet_saved(monkeypatch):
@@ -80,7 +98,7 @@ def test_build_messages_appends_user_when_not_yet_saved(monkeypatch):
     monkeypatch.setattr(
         router_mod,
         "get_messages",
-        lambda session_id, limit=200: [make("assistant", "我在")],
+        lambda session_id, limit=200: [make_stored("assistant", "我在")],
     )
 
     messages = build_messages(1, "今天好累")
@@ -100,7 +118,16 @@ def test_build_messages_injects_behavior_profile(monkeypatch):
     assert "behavior" in messages[0]["content"]
 
 
-def test_build_messages_strips_storage_fields_and_orphaned_assistant(monkeypatch):
+def test_format_runtime_context_injects_current_time():
+    now = datetime(2026, 8, 8, 17, 8, 13, tzinfo=timezone.utc)
+    context = format_runtime_context(now)
+
+    assert "2026-08-08 17:08:13 +0000" in context
+    assert "不要凭历史对话猜" in context
+    assert "历史回复里的" in context
+
+
+def test_build_messages_marks_history_time_and_strips_storage_fields(monkeypatch):
     monkeypatch.setattr(router_mod, "load_persona", lambda mask: "core")
     monkeypatch.setattr(router_mod, "format_self_memory", lambda: "self")
     monkeypatch.setattr(router_mod, "format_behavior_profile", lambda: "behavior")
@@ -113,21 +140,21 @@ def test_build_messages_strips_storage_fields_and_orphaned_assistant(monkeypatch
                 "id": 1,
                 "role": "assistant",
                 "content": "没有对应提问的旧回复",
-                "created_at": "2026-08-07T10:00:00",
+                "created_at": "2026-08-07 10:00:00",
             },
             {
                 "id": 2,
                 "role": "user",
                 "content": "我还在吗",
-                "created_at": "2026-08-07T10:01:00",
+                "created_at": "2026-08-07 10:01:00",
             },
         ],
     )
 
     messages = build_messages(1, "继续聊吧")
 
-    assert messages[1:] == [
-        {"role": "user", "content": "我还在吗"},
-        {"role": "user", "content": "继续聊吧"},
-    ]
+    assert messages[1]["role"] == "user"
+    assert messages[1]["content"].startswith("[消息时间：")
+    assert messages[1]["content"].endswith("我还在吗")
+    assert messages[2] == {"role": "user", "content": "继续聊吧"}
     assert all(set(message) <= {"role", "content"} for message in messages)

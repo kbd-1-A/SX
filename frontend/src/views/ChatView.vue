@@ -10,12 +10,25 @@ onMounted(() => chat.init())
 </script>
 
 <template>
-  <n-layout has-sider style="height: 100vh">
+  <n-layout has-sider class="chat-view">
     <n-layout-sider bordered width="300" :native-scrollbar="false">
       <SidePanel />
     </n-layout-sider>
-    <n-layout-content>
+    <n-layout-content class="chat-content">
       <ChatWindow />
     </n-layout-content>
   </n-layout>
 </template>
+
+<style scoped>
+.chat-view {
+  height: 100dvh;
+  overflow: hidden;
+}
+
+.chat-content {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+</style>

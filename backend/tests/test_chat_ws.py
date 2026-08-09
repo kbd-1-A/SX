@@ -8,6 +8,19 @@ from fastapi.testclient import TestClient
 import app.api.chat as chat_mod
 from app.agents.errors import AgentTimeoutError
 
+EMOTION_STATE = {
+    "emotion": "tired",
+    "emotion_label": "疲惫",
+    "intensity": 1,
+    "confidence": 0.67,
+    "user_need": "rest",
+    "user_need_label": "需要减负休息",
+    "strategy": "reduce_load",
+    "strategy_label": "减负陪伴",
+    "risk_level": "none",
+    "sensitive_scene": "none",
+}
+
 
 def make_app() -> FastAPI:
     app = FastAPI()
@@ -30,6 +43,7 @@ def patch_chat_dependencies(monkeypatch):
     monkeypatch.setattr(chat_mod, "add_mask_milestone", lambda mask: None)
     monkeypatch.setattr(chat_mod, "choose_mask", lambda content: _return("daily_companion"))
     monkeypatch.setattr(chat_mod, "detect_reply_mode", lambda content, mask: "catch_up")
+    monkeypatch.setattr(chat_mod, "detect_emotion_state", lambda content: EMOTION_STATE)
 
 
 async def _return(value: str) -> str:
@@ -54,7 +68,8 @@ def test_ws_chat_streams_done_event(monkeypatch):
     assert done["type"] == "done"
     assert done["assistant_id"] == 2
     assert done["mask"] == "daily_companion"
-    assert done["reply_mode"] == "catch_up"
+    assert done["reply_mode"] == "comfort"
+    assert done["emotion_state"] == EMOTION_STATE
 
 
 def test_ws_chat_maps_agent_error_without_internal_detail(monkeypatch):

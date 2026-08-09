@@ -2,25 +2,53 @@
 import { nextTick, ref, watch } from 'vue'
 import { NAlert, NButton, NInput, NLayout, NLayoutHeader, NLayoutFooter, NTag } from 'naive-ui'
 import { useChatStore } from '../stores/chat'
+import RealtimeFoundationPanel from './RealtimeFoundationPanel.vue'
 
 const chat = useChatStore()
 const input = ref('')
 const listRef = ref<HTMLDivElement | null>(null)
+const isFollowingLatest = ref(true)
 
-// 新消息进来时滚到底部
+const FOLLOW_THRESHOLD = 80
+
+function isNearBottom() {
+  const list = listRef.value
+  if (!list) return true
+  return list.scrollHeight - list.scrollTop - list.clientHeight <= FOLLOW_THRESHOLD
+}
+
+function onListScroll() {
+  isFollowingLatest.value = isNearBottom()
+}
+
+function scrollToLatest(behavior: ScrollBehavior = 'auto') {
+  const list = listRef.value
+  if (!list) return
+  list.scrollTo({ top: list.scrollHeight, behavior })
+}
+
 watch(
-  () => chat.messages.length,
-  async () => {
-    await nextTick()
-    if (listRef.value) listRef.value.scrollTop = listRef.value.scrollHeight
+  () => {
+    const latest = chat.messages[chat.messages.length - 1]
+    return [chat.currentSessionId, chat.messages.length, latest?.content, latest?.streaming] as const
   },
-  { deep: true },
+  async ([sessionId], [previousSessionId]) => {
+    if (sessionId !== previousSessionId) isFollowingLatest.value = true
+    await nextTick()
+    if (isFollowingLatest.value) scrollToLatest()
+  },
+  { flush: 'post' },
 )
 
-function onSend() {
+async function onSend() {
   const text = input.value.trim()
   if (!text) return
-  if (chat.send(text)) input.value = ''
+  if (chat.send(text)) {
+    input.value = ''
+    isFollowingLatest.value = true
+    await nextTick()
+    scrollToLatest('smooth')
+  }
 }
 
 const statusNames: Record<string, string> = {
@@ -32,21 +60,24 @@ const statusNames: Record<string, string> = {
 </script>
 
 <template>
-  <n-layout style="height: 100%; display: flex; flex-direction: column">
-    <n-layout-header bordered style="padding: 12px 24px">
-      <div style="display: flex; align-items: center; gap: 12px">
-        <h2 style="margin: 0; font-size: 18px">时叙 · 你的陪伴 Agent</h2>
-        <n-tag
-          :type="chat.connected ? 'success' : chat.status === 'reconnecting' ? 'warning' : 'error'"
-          size="small"
-          :bordered="false"
-        >
-          {{ statusNames[chat.status] || '离线' }}
-        </n-tag>
+  <n-layout class="chat-window" content-class="chat-window__content">
+    <n-layout-header bordered class="chat-header">
+      <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px">
+        <div style="display: flex; align-items: center; gap: 12px; min-width: 0">
+          <h2 style="margin: 0; font-size: 18px; white-space: nowrap">时叙 · 你的陪伴 Agent</h2>
+          <n-tag
+            :type="chat.connected ? 'success' : chat.status === 'reconnecting' ? 'warning' : 'error'"
+            size="small"
+            :bordered="false"
+          >
+            {{ statusNames[chat.status] || '离线' }}
+          </n-tag>
+        </div>
+        <RealtimeFoundationPanel />
       </div>
     </n-layout-header>
 
-    <div ref="listRef" style="flex: 1; overflow-y: auto">
+    <div ref="listRef" class="message-list" @scroll="onListScroll">
       <div
         style="
           padding: 24px;
@@ -81,7 +112,7 @@ const statusNames: Record<string, string> = {
       </div>
     </div>
 
-    <n-layout-footer bordered style="padding: 16px 24px">
+    <n-layout-footer bordered class="chat-footer">
       <div style="max-width: 860px; margin: 0 auto; display: flex; flex-direction: column; gap: 10px">
         <n-alert v-if="chat.lastError" type="warning" :show-icon="false">
           {{ chat.lastError }}
@@ -102,3 +133,35 @@ const statusNames: Record<string, string> = {
     </n-layout-footer>
   </n-layout>
 </template>
+
+<style scoped>
+.chat-window {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+:deep(.chat-window__content) {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.chat-header {
+  flex: 0 0 auto;
+  padding: 12px 24px;
+}
+
+.message-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.chat-footer {
+  flex: 0 0 auto;
+  padding: 16px 24px;
+}
+</style>

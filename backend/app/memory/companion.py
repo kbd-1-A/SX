@@ -23,6 +23,10 @@ FREQUENCY_LABELS = {
     "normal": "正常",
     "active": "积极",
 }
+DEFAULT_COMPANION_SETTINGS = {
+    "enabled": True,
+    "frequency": "normal",
+}
 GENERAL_DAILY_LIMITS = {
     "quiet": 0,
     "normal": 2,
@@ -48,7 +52,36 @@ TIME_PATTERN = re.compile(
     r"(?P<hour>\d{1,2}|[一二两三四五六七八九十]{1,3})(?:\s*(?:点|时|:|：))\s*"
     r"(?P<minute>\d{1,2})?\s*(?:分|分钟)?"
 )
-CHINESE_DIGITS = {"一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+RELATIVE_TIME_PATTERN = re.compile(
+    r"(?P<amount>半|\d+|[一二两三四五六七八九十]{1,3})"
+    r"(?P<unit>分钟|分|小时|钟头)后"
+)
+WEEKDAY_PATTERN = re.compile(
+    r"(?P<prefix>下周|下星期|本周|这周|这星期)?"
+    r"(?:周|星期)(?P<weekday>[一二三四五六日天])"
+)
+CHINESE_DIGITS = {
+    "一": 1,
+    "二": 2,
+    "两": 2,
+    "三": 3,
+    "四": 4,
+    "五": 5,
+    "六": 6,
+    "七": 7,
+    "八": 8,
+    "九": 9,
+}
+WEEKDAY_NUMBERS = {
+    "一": 0,
+    "二": 1,
+    "三": 2,
+    "四": 3,
+    "五": 4,
+    "六": 5,
+    "日": 6,
+    "天": 6,
+}
 
 
 def _parse_hour(value: str) -> int | None:
@@ -104,24 +137,27 @@ def _parse_db_timestamp(value: object) -> datetime | None:
         return None
 
 
-def _load_settings() -> dict[str, str]:
+def _load_settings() -> dict[str, Any]:
     conn = _conn()
     row = conn.execute(
         "SELECT companion_settings FROM user_profile WHERE id = 1"
     ).fetchone()
     conn.close()
-    settings = {"frequency": "normal"}
+    settings = dict(DEFAULT_COMPANION_SETTINGS)
     if row and row["companion_settings"]:
         try:
             saved = json.loads(row["companion_settings"])
         except (json.JSONDecodeError, TypeError):
             saved = {}
-        if isinstance(saved, dict) and saved.get("frequency") in FREQUENCIES:
-            settings["frequency"] = saved["frequency"]
+        if isinstance(saved, dict):
+            if saved.get("frequency") in FREQUENCIES:
+                settings["frequency"] = saved["frequency"]
+            if isinstance(saved.get("enabled"), bool):
+                settings["enabled"] = saved["enabled"]
     return settings
 
 
-def get_companion_settings() -> dict[str, str]:
+def get_companion_settings() -> dict[str, Any]:
     settings = _load_settings()
     return {
         **settings,
@@ -129,18 +165,31 @@ def get_companion_settings() -> dict[str, str]:
     }
 
 
-def set_companion_frequency(frequency: str) -> dict[str, str]:
-    if frequency not in FREQUENCIES:
+def set_companion_settings(
+    *, frequency: str | None = None, enabled: bool | None = None
+) -> dict[str, Any]:
+    if frequency is not None and frequency not in FREQUENCIES:
         raise ValueError("unsupported companion frequency")
+    if frequency is None and enabled is None:
+        return get_companion_settings()
+    settings = _load_settings()
+    if frequency is not None:
+        settings["frequency"] = frequency
+    if enabled is not None:
+        settings["enabled"] = enabled
     conn = _conn()
     conn.execute(
         "UPDATE user_profile SET companion_settings = ?, updated_at = CURRENT_TIMESTAMP "
         "WHERE id = 1",
-        (json.dumps({"frequency": frequency}, ensure_ascii=False),),
+        (json.dumps(settings, ensure_ascii=False),),
     )
     conn.commit()
     conn.close()
     return get_companion_settings()
+
+
+def set_companion_frequency(frequency: str) -> dict[str, Any]:
+    return set_companion_settings(frequency=frequency)
 
 
 def _category_for(text: str) -> tuple[str, int]:
@@ -152,6 +201,20 @@ def _category_for(text: str) -> tuple[str, int]:
 
 
 def _due_from_text(text: str, now: datetime) -> datetime | None:
+    relative_match = RELATIVE_TIME_PATTERN.search(text)
+    if relative_match:
+        raw_amount = relative_match.group("amount")
+        if raw_amount == "半":
+            amount = 0.5
+        else:
+            amount = _parse_hour(raw_amount)
+        if amount is not None:
+            unit = relative_match.group("unit")
+            delta = timedelta(
+                minutes=amount * 60 if unit in {"小时", "钟头"} else amount
+            )
+            return now + delta
+
     time_match = TIME_PATTERN.search(text)
     period = time_match.group("period") if time_match else None
     if time_match:
@@ -171,6 +234,7 @@ def _due_from_text(text: str, now: datetime) -> datetime | None:
 
         month_match = MONTH_DAY_PATTERN.search(text)
         explicit_date = False
+        weekday_match = WEEKDAY_PATTERN.search(text)
         if month_match:
             try:
                 target = now.replace(
@@ -185,6 +249,9 @@ def _due_from_text(text: str, now: datetime) -> datetime | None:
                 except ValueError:
                     return None
             explicit_date = True
+        elif weekday_match:
+            target = _weekday_target(now, weekday_match)
+            explicit_date = True
         elif "后天" in text:
             target = now + timedelta(days=2)
             explicit_date = True
@@ -194,6 +261,8 @@ def _due_from_text(text: str, now: datetime) -> datetime | None:
         else:
             target = now
         due = target.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if weekday_match and due <= now:
+            due += timedelta(days=7)
         # 没有明确日期时，将已过去的时间理解为下一次提醒，避免刚输入就变成过期。
         if not explicit_date and "今天" not in text and due <= now:
             due += timedelta(days=1)
@@ -206,6 +275,12 @@ def _due_from_text(text: str, now: datetime) -> datetime | None:
         return base + timedelta(days=1)
     if "今天" in text:
         return now.replace(hour=20, minute=0, second=0, microsecond=0)
+    weekday_match = WEEKDAY_PATTERN.search(text)
+    if weekday_match:
+        due = _weekday_target(now, weekday_match).replace(
+            hour=9, minute=0, second=0, microsecond=0
+        )
+        return due + timedelta(days=7) if due <= now else due
     match = MONTH_DAY_PATTERN.search(text)
     if not match:
         return None
@@ -221,6 +296,16 @@ def _due_from_text(text: str, now: datetime) -> datetime | None:
         except ValueError:
             return None
     return due
+
+
+def _weekday_target(now: datetime, match: re.Match[str]) -> datetime:
+    target_weekday = WEEKDAY_NUMBERS[match.group("weekday")]
+    prefix = match.group("prefix") or ""
+    if prefix in {"下周", "下星期"}:
+        days_until_next_monday = (7 - now.weekday()) % 7 or 7
+        return now + timedelta(days=days_until_next_monday + target_weekday)
+    days = (target_weekday - now.weekday()) % 7
+    return now + timedelta(days=days)
 
 
 def _clean_title(text: str) -> str:
@@ -495,6 +580,8 @@ def evaluate_time_engine(now: datetime | None = None) -> list[dict[str, Any]]:
     local_now = _local_now(now)
     _backfill_due_dates(local_now)
     settings = get_companion_settings()
+    if not settings["enabled"]:
+        return []
     frequency = settings["frequency"]
     recently_active = _is_recently_active(local_now, frequency)
     created: list[dict[str, Any]] = []
@@ -573,8 +660,13 @@ def list_recent_care_points(limit: int = 10) -> list[dict[str, Any]]:
     return [_event_dict(row) for row in rows]
 
 
-def get_companion_overview(now: datetime | None = None) -> dict[str, Any]:
-    created = evaluate_time_engine(now=now)
+def get_companion_overview(
+    now: datetime | None = None,
+    *,
+    evaluate: bool = False,
+) -> dict[str, Any]:
+    """Return companion data without creating reminders unless explicitly triggered."""
+    created = evaluate_time_engine(now=now) if evaluate else []
     return {
         "settings": get_companion_settings(),
         "follow_ups": list_follow_ups(limit=20, status="open"),

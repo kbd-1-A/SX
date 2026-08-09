@@ -23,6 +23,14 @@ MASK_CLASSIFY_TIMEOUT_SECONDS = float(
 )
 MAX_USER_MESSAGE_CHARS = int(os.getenv("MAX_USER_MESSAGE_CHARS", "4000"))
 
+ASR_MODEL = os.getenv(
+    "ASR_MODEL",
+    str(BASE_DIR / "models" / "faster-whisper-base"),
+)
+ASR_DEVICE = os.getenv("ASR_DEVICE", "cpu")
+ASR_COMPUTE_TYPE = os.getenv("ASR_COMPUTE_TYPE", "int8")
+ASR_LANGUAGE = os.getenv("ASR_LANGUAGE", "zh")
+
 PORT = int(os.getenv("PORT", "8000"))
 
 # SQLite 数据文件

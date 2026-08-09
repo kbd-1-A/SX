@@ -6,6 +6,7 @@ export interface ChatMessage {
   role: 'user' | 'assistant'
   content: string
   streaming?: boolean
+  proactiveEventId?: number
 }
 
 export interface ChatTask {
@@ -16,7 +17,53 @@ export interface ChatTask {
   preview: string
 }
 
+export interface EmotionState {
+  emotion: string
+  emotion_label: string
+  intensity: number
+  confidence: number
+  user_need: string
+  user_need_label: string
+  strategy: string
+  strategy_label: string
+  risk_level: string
+  sensitive_scene: string
+  emotion_scores?: Record<string, number>
+  strategy_scores?: Record<string, number>
+}
+
 export type ConnectionStatus = 'connecting' | 'online' | 'reconnecting' | 'offline'
+export type ChatReplyOrigin = 'text' | 'voice'
+
+export interface ChatReplyEvent {
+  type: 'start' | 'chunk' | 'done' | 'error' | 'interrupted'
+  requestId: string
+  origin: ChatReplyOrigin
+  content?: string
+}
+
+interface ActiveReply {
+  requestId: string
+  origin: ChatReplyOrigin
+}
+
+interface PendingVoiceMessage {
+  content: string
+  requestId: string
+}
+
+const DEFAULT_EMOTION: EmotionState = {
+  emotion: 'neutral',
+  emotion_label: '平稳',
+  intensity: 0,
+  confidence: 0,
+  user_need: 'company',
+  user_need_label: '想有人陪着',
+  strategy: 'catch_up',
+  strategy_label: '自然接话',
+  risk_level: 'none',
+  sensitive_scene: 'none',
+}
 
 export const useChatStore = defineStore('chat', () => {
   const messages = ref<ChatMessage[]>([])
@@ -26,12 +73,93 @@ export const useChatStore = defineStore('chat', () => {
   const connected = computed(() => status.value === 'online')
   const currentMask = ref('daily_companion')
   const currentReplyMode = ref('catch_up')
+  const currentEmotion = ref<EmotionState>({ ...DEFAULT_EMOTION })
   const lastError = ref('')
   const isStreaming = computed(() => messages.value.some((m) => m.streaming))
+  const isReplyPending = ref(false)
+  const userInteractionSequence = ref(0)
   let ws: WebSocket | null = null
   let reconnectTimer: number | null = null
   let reconnectAttempts = 0
   let stopRequested = false
+  let pendingProactiveMessages: Array<{ id: number; content: string }> = []
+  let activeReply: ActiveReply | null = null
+  let pendingVoiceMessages: PendingVoiceMessage[] = []
+  const replyListeners = new Set<(event: ChatReplyEvent) => void>()
+  let requestSequence = 0
+
+  function emitReply(event: ChatReplyEvent) {
+    for (const listener of replyListeners) listener(event)
+  }
+
+  function completeActiveReply(type: Extract<ChatReplyEvent['type'], 'done' | 'error' | 'interrupted'>) {
+    if (!activeReply) return
+    const reply = activeReply
+    activeReply = null
+    isReplyPending.value = false
+    emitReply({ type, ...reply })
+  }
+
+  function subscribeReply(listener: (event: ChatReplyEvent) => void) {
+    replyListeners.add(listener)
+    return () => replyListeners.delete(listener)
+  }
+
+  function makeRequestId() {
+    requestSequence += 1
+    return `chat_${Date.now().toString(36)}_${requestSequence.toString(36)}`
+  }
+
+  function flushPendingVoiceMessages() {
+    if (activeReply || !ws || ws.readyState !== WebSocket.OPEN) return
+    const next = pendingVoiceMessages.shift()
+    if (!next) return
+    if (!sendMessage(next.content, 'voice', next.requestId, false)) {
+      pendingVoiceMessages.unshift(next)
+    }
+  }
+
+  function flushProactiveMessages() {
+    if (isStreaming.value || !pendingProactiveMessages.length) return
+    const pending = pendingProactiveMessages
+    pendingProactiveMessages = []
+    for (const event of pending) {
+      if (messages.value.some((message) => message.proactiveEventId === event.id)) continue
+      messages.value.push({
+        id: -event.id,
+        role: 'assistant',
+        content: event.content,
+        proactiveEventId: event.id,
+      })
+    }
+  }
+
+  function receiveProactiveMessages(events: Array<{ id: number; content: string }>) {
+    for (const event of events) {
+      if (
+        messages.value.some((message) => message.proactiveEventId === event.id) ||
+        pendingProactiveMessages.some((pending) => pending.id === event.id)
+      ) {
+        continue
+      }
+      if (isStreaming.value) {
+        pendingProactiveMessages.push(event)
+      } else {
+        messages.value.push({
+          id: -event.id,
+          role: 'assistant',
+          content: event.content,
+          proactiveEventId: event.id,
+        })
+      }
+    }
+  }
+
+  function resetTurnState() {
+    currentMask.value = 'daily_companion'
+    currentReplyMode.value = 'catch_up'
+    currentEmotion.value = { ...DEFAULT_EMOTION }
+  }
 
   function wsUrl() {
     const proto = location.protocol === 'https:' ? 'wss' : 'ws'
@@ -52,6 +180,7 @@ export const useChatStore = defineStore('chat', () => {
       reconnectAttempts = 0
       stopRequested = false
       lastError.value = ''
+      flushPendingVoiceMessages()
     }
 
     socket.onclose = () => {
@@ -63,6 +192,7 @@ export const useChatStore = defineStore('chat', () => {
           lastError.value = '回复中断了，我正在重新连接。'
         }
       }
+      if (activeReply) completeActiveReply(stopRequested ? 'interrupted' : 'error')
       stopRequested = false
       status.value = 'offline'
       scheduleReconnect()
@@ -92,12 +222,17 @@ export const useChatStore = defineStore('chat', () => {
             streaming: true,
           })
         }
+        if (activeReply) emitReply({ type: 'chunk', ...activeReply, content: data.content })
       } else if (data.type === 'done') {
         const last = messages.value[messages.value.length - 1]
         if (last?.streaming) last.streaming = false
+        flushProactiveMessages()
         if (data.mask) currentMask.value = data.mask
         if (data.reply_mode) currentReplyMode.value = data.reply_mode
+        if (data.emotion_state) currentEmotion.value = data.emotion_state
+        completeActiveReply('done')
         loadTasks()
+        flushPendingVoiceMessages()
       } else if (data.type === 'error') {
         const last = messages.value[messages.value.length - 1]
         const hadPartialReply = Boolean(last?.role === 'assistant' && last.streaming)
@@ -111,6 +246,9 @@ export const useChatStore = defineStore('chat', () => {
             streaming: false,
           })
         }
+        flushProactiveMessages()
+        completeActiveReply('error')
+        flushPendingVoiceMessages()
       }
     }
   }
@@ -133,6 +271,8 @@ export const useChatStore = defineStore('chat', () => {
     }
     const socket = ws
     ws = null
+    pendingVoiceMessages = []
+    completeActiveReply('interrupted')
     if (socket && socket.readyState !== WebSocket.CLOSED) socket.close()
   }
 
@@ -160,6 +300,7 @@ export const useChatStore = defineStore('chat', () => {
           role: m.role,
           content: m.content,
         }))
+        pendingProactiveMessages = []
       }
     } catch {
       lastError.value = '历史消息暂时没加载出来，重连后会再试。'
@@ -169,10 +310,10 @@ export const useChatStore = defineStore('chat', () => {
   async function switchTask(sessionId: number) {
     if (currentSessionId.value === sessionId) return
     currentSessionId.value = sessionId
-    currentMask.value = 'daily_companion'
-    currentReplyMode.value = 'catch_up'
+    resetTurnState()
     lastError.value = ''
     messages.value = []
+    pendingProactiveMessages = []
     closeSocket()
     await loadHistory()
     connect()
@@ -187,22 +328,27 @@ export const useChatStore = defineStore('chat', () => {
     const task = await res.json()
     tasks.value = [task, ...tasks.value.filter((t) => t.id !== task.id)]
     currentSessionId.value = task.id
-    currentMask.value = 'daily_companion'
-    currentReplyMode.value = 'catch_up'
+    resetTurnState()
     lastError.value = ''
     messages.value = []
+    pendingProactiveMessages = []
     closeSocket()
     connect()
   }
 
-  function send(content: string): boolean {
+  function sendMessage(
+    content: string,
+    origin: ChatReplyOrigin,
+    requestId = makeRequestId(),
+    appendUserMessage = true,
+  ): boolean {
     const text = content.trim()
     if (!text) return false
     if (text.length > 4000) {
       lastError.value = '这条消息有点长，请控制在 4000 个字符以内。'
       return false
     }
-    if (isStreaming.value) {
+    if (activeReply || isStreaming.value) {
       lastError.value = '时叙正在回复，等这句话结束或先点停止。'
       return false
     }
@@ -212,21 +358,52 @@ export const useChatStore = defineStore('chat', () => {
       return false
     }
     lastError.value = ''
-    messages.value.push({ id: -1, role: 'user', content: text })
+    if (appendUserMessage) messages.value.push({ id: -1, role: 'user', content: text })
+    if (origin === 'text') userInteractionSequence.value += 1
+    activeReply = { requestId, origin }
+    isReplyPending.value = true
+    emitReply({ type: 'start', ...activeReply })
     ws.send(JSON.stringify({ type: 'message', content: text }))
     loadTasks()
     return true
   }
 
+  function send(content: string): boolean {
+    return sendMessage(content, 'text')
+  }
+
+  function sendVoice(content: string): string | null {
+    const text = content.trim()
+    if (!text || text.length > 4000) return null
+    const requestId = makeRequestId()
+    messages.value.push({ id: -1, role: 'user', content: text })
+    userInteractionSequence.value += 1
+    pendingVoiceMessages.push({ content: text, requestId })
+    lastError.value = ''
+    flushPendingVoiceMessages()
+    if (!ws || ws.readyState === WebSocket.CLOSED) scheduleReconnect()
+    return requestId
+  }
+
   function stop() {
     const last = messages.value[messages.value.length - 1]
     if (last && last.streaming) last.streaming = false
+    flushProactiveMessages()
+    const hadActiveReply = activeReply !== null
+    completeActiveReply('interrupted')
     if (ws && ws.readyState === WebSocket.OPEN) {
       stopRequested = true
       ws.close()
     } else {
       scheduleReconnect()
     }
+    return hadActiveReply
+  }
+
+  function interruptForSpeech() {
+    pendingVoiceMessages = []
+    if (!activeReply && !isStreaming.value) return false
+    return stop()
   }
 
   async function init() {
@@ -243,14 +420,21 @@ export const useChatStore = defineStore('chat', () => {
     connected,
     currentMask,
     currentReplyMode,
+    currentEmotion,
     lastError,
     isStreaming,
+    isReplyPending,
+    userInteractionSequence,
     init,
     loadTasks,
     loadHistory,
     switchTask,
     newTask,
     send,
+    sendVoice,
     stop,
+    interruptForSpeech,
+    receiveProactiveMessages,
+    subscribeReply,
   }
 })

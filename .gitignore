@@ -4,7 +4,13 @@ backend/.venv/
 backend/venv/
 backend/.env
 backend/data/
+backend/models/
 __pycache__/
 *.pyc
 .tmp_screenshots/
+.tmp_video_analysis/
+.tmp_video_tools/
+.tmp_voice_*.log
+deliverables/
 frontend/tsconfig.tsbuildinfo
+backend/.tmp_pytest_run/

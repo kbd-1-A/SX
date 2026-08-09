@@ -3,6 +3,7 @@ import { onMounted, ref, watch } from 'vue'
 import { NButton, NSpace, NTag, NEmpty } from 'naive-ui'
 import CompanionPanel from './CompanionPanel.vue'
 import { useChatStore } from '../stores/chat'
+import { formatTaskTime } from '../lib/time'
 
 const chat = useChatStore()
 
@@ -61,7 +62,14 @@ watch(() => chat.messages.length, load)
     </n-tag>
 
     <h3 style="margin: 0; font-size: 15px">今日心情</h3>
-    <n-tag type="info" size="small" :bordered="false">V1 先占位，情绪识别后置</n-tag>
+    <n-space vertical size="small">
+      <n-tag type="info" size="small" :bordered="false">
+        {{ chat.currentEmotion.emotion_label }} · {{ chat.currentEmotion.strategy_label }}
+      </n-tag>
+      <div style="font-size: 12px; color: #777">
+        需要：{{ chat.currentEmotion.user_need_label }} · 强度 {{ chat.currentEmotion.intensity }}/3
+      </div>
+    </n-space>
 
     <h3 style="margin: 0; font-size: 15px">画像速览</h3>
     <n-space vertical size="small">
@@ -83,7 +91,7 @@ watch(() => chat.messages.length, load)
       <n-button size="small" @click="bump">手动 +1 亲密度</n-button>
     </n-space>
 
-    <CompanionPanel :refresh-key="chat.messages.length" />
+    <CompanionPanel :interaction-key="chat.userInteractionSequence" />
 
     <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px">
       <h3 style="margin: 0; font-size: 15px">记忆时间线</h3>
@@ -105,7 +113,7 @@ watch(() => chat.messages.length, load)
         @click="chat.switchTask(task.id)"
       >
         <div style="font-size: 12px; color: #999">
-          #{{ task.id }} · {{ task.last_message_at ? task.last_message_at.slice(0, 16) : '' }}
+          #{{ task.id }} · {{ formatTaskTime(task.last_message_at) }}
         </div>
         <div style="font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">
           {{ task.preview }}

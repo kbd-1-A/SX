@@ -2,3 +2,5 @@ fastapi>=0.115
 uvicorn[standard]>=0.32
 openai>=1.55
 python-dotenv>=1.0
+faster-whisper>=1.2.1
+numpy>=1.26

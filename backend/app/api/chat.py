@@ -15,6 +15,7 @@ from uuid import uuid4
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
 
+from app.agents.emotion import adjust_reply_mode, detect_emotion_state
 from app.agents.errors import AgentError, AgentEmptyResponseError
 from app.agents.mask import DEFAULT_MASK
 from app.agents.reply_mode import detect_reply_mode
@@ -160,7 +161,8 @@ async def ws_chat(ws: WebSocket) -> None:
                     turns_since_switch = 0
             turns_since_switch += 1
             mask = current_mask or DEFAULT_MASK
-            reply_mode = detect_reply_mode(content, mask=mask)
+            emotion_state = detect_emotion_state(content)
+            reply_mode = adjust_reply_mode(detect_reply_mode(content, mask=mask), emotion_state)
         except Exception:
             logger.exception(
                 "chat_routing_failed request_id=%s session_id=%s",
@@ -179,6 +181,7 @@ async def ws_chat(ws: WebSocket) -> None:
                 content,
                 mask=mask,
                 reply_mode=reply_mode,
+                emotion_state=emotion_state,
             ):
                 if not chunk:
                     continue
@@ -264,6 +267,7 @@ async def ws_chat(ws: WebSocket) -> None:
                         "assistant_id": assistant_id,
                         "mask": mask,
                         "reply_mode": reply_mode,
+                        "emotion_state": emotion_state,
                     },
                     ensure_ascii=False,
                 )

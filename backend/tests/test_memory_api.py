@@ -73,9 +73,13 @@ def test_legacy_nickname_memory_endpoints(api_client):
 
 
 def test_companion_endpoints(api_client):
-    settings = api_client.patch("/api/companion/settings", json={"frequency": "active"})
+    settings = api_client.patch(
+        "/api/companion/settings",
+        json={"frequency": "active", "enabled": True},
+    )
     assert settings.status_code == 200
     assert settings.json()["frequency"] == "active"
+    assert settings.json()["enabled"] is True
 
     created = api_client.post(
         "/api/companion/follow-ups",
@@ -94,9 +98,36 @@ def test_companion_endpoints(api_client):
     assert overview.json()["settings"]["frequency"] == "active"
     assert overview.json()["follow_ups"][0]["id"] == follow_up_id
 
+    check_in = api_client.post("/api/companion/check-in")
+    assert check_in.status_code == 200
+    assert check_in.json()["follow_ups"][0]["id"] == follow_up_id
+
     done = api_client.patch(
         f"/api/companion/follow-ups/{follow_up_id}",
         json={"status": "done"},
     )
     assert done.status_code == 200
     assert done.json()["status"] == "done"
+
+
+def test_companion_create_infers_event_metadata(api_client):
+    created = api_client.post(
+        "/api/companion/follow-ups",
+        json={"title": "明天面试"},
+    )
+
+    assert created.status_code == 200
+    assert created.json()["category"] == "interview"
+    assert created.json()["importance"] == 3
+    assert created.json()["due_at"] is not None
+
+
+def test_companion_can_be_fully_disabled(api_client):
+    settings = api_client.patch(
+        "/api/companion/settings",
+        json={"enabled": False},
+    )
+
+    assert settings.status_code == 200
+    assert settings.json()["enabled"] is False
+    assert settings.json()["frequency"] == "normal"

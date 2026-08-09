@@ -6,9 +6,11 @@
 
 import asyncio
 import logging
+from datetime import datetime, timezone
 
 from openai import APIConnectionError, APIError, APITimeoutError, AsyncOpenAI, RateLimitError
 
+from app.agents.emotion import EmotionState, detect_emotion_state, format_emotion_strategy
 from app.agents.errors import (
     AgentConfigurationError,
     AgentEmptyResponseError,
@@ -60,6 +62,31 @@ def estimate_tokens(text: str) -> int:
     wide = sum(1 for ch in text if ord(ch) >= 0x2E80)
     narrow = len(text) - wide
     return wide + narrow // 4
+
+
+def format_runtime_context(now: datetime | None = None) -> str:
+    """Inject volatile facts that the model must not guess."""
+    current = now or datetime.now().astimezone()
+    return (
+        "# 当前真实时间\n"
+        f"- 当前本地时间：{current.strftime('%Y-%m-%d %H:%M:%S %z')}\n"
+        "- 用户问现在几点、今天/明天/昨天时，必须以上面这行时间为准，不要凭历史对话猜。\n"
+        "- 历史消息前的「消息时间」只说明那条消息发生在什么时候；历史回复里的“现在/今晚/快几点”都不能当成当前时间。"
+    )
+
+
+def format_message_time(created_at: object) -> str | None:
+    """Convert SQLite UTC timestamps to local wall time for prompt history."""
+    if not isinstance(created_at, str) or not created_at.strip():
+        return None
+    value = created_at.strip().replace(" ", "T")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone().strftime("%Y-%m-%d %H:%M:%S %z")
 
 
 def truncate_history(history: list[dict], max_tokens: int) -> list[dict]:
@@ -125,11 +152,15 @@ def build_messages(
     user_msg: str,
     mask: str = DEFAULT_MASK,
     reply_mode: str = "catch_up",
+    emotion_state: EmotionState | None = None,
 ) -> list[dict]:
+    emotion_state = emotion_state or detect_emotion_state(user_msg)
     system = "\n\n".join(
         [
             load_persona(mask),
+            format_runtime_context(),
             format_reply_mode(reply_mode),
+            format_emotion_strategy(emotion_state),
             format_tone_rules(reply_mode),
             "# 关于我们\n" + format_self_memory(),
             format_behavior_profile(),
@@ -140,30 +171,44 @@ def build_messages(
     history = _normalize_history(get_messages(session_id, limit=200))
     history = truncate_history(history, MAX_HISTORY_TOKENS)
     history = _drop_orphaned_assistant_prefix(history)
-    messages.extend(history)
+    messages.extend(_model_history(history))
     # chat.py 会先把当前用户消息落库。若历史最后一条已经是当前消息，
     # 不再 append 一次，避免模型听见同一句两遍。
     if not (
         history
         and history[-1].get("role") == "user"
-        and history[-1].get("content") == user_msg
+        and history[-1].get("raw_content") == user_msg
     ):
         messages.append({"role": "user", "content": user_msg})
     return messages
 
 
 def _normalize_history(history: list[dict]) -> list[dict]:
-    """只向模型发送合法 role/content，移除数据库字段和空消息。"""
+    """只向模型发送合法 role/content，并给每条历史补上发生时间。"""
     normalized: list[dict] = []
     for message in history:
         role = message.get("role")
-        content = message.get("content")
-        if role not in {"user", "assistant"} or not isinstance(content, str):
+        raw_content = message.get("content")
+        if role not in {"user", "assistant"} or not isinstance(raw_content, str):
             continue
-        content = content.strip()
-        if content:
-            normalized.append({"role": role, "content": content})
+        raw_content = raw_content.strip()
+        if not raw_content:
+            continue
+        timestamp = format_message_time(message.get("created_at"))
+        content = (
+            f"[消息时间：{timestamp}]\n{raw_content}" if timestamp else raw_content
+        )
+        normalized.append(
+            {"role": role, "content": content, "raw_content": raw_content}
+        )
     return normalized
+
+
+def _model_history(history: list[dict]) -> list[dict]:
+    return [
+        {"role": message["role"], "content": message["content"]}
+        for message in history
+    ]
 
 
 def _drop_orphaned_assistant_prefix(history: list[dict]) -> list[dict]:
@@ -179,6 +224,7 @@ async def stream_reply(
     user_msg: str,
     mask: str = DEFAULT_MASK,
     reply_mode: str = "catch_up",
+    emotion_state: EmotionState | None = None,
 ):
     """异步生成回复文本，逐块 yield。"""
     if not DEEPSEEK_API_KEY:
@@ -193,6 +239,7 @@ async def stream_reply(
                 user_msg,
                 mask=mask,
                 reply_mode=reply_mode,
+                emotion_state=emotion_state,
             ),
             stream=True,
         )
