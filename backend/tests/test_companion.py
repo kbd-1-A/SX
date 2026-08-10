@@ -194,7 +194,7 @@ def test_disabled_companion_skips_even_important_reminders(tmp_db):
     assert evaluate_time_engine(now=datetime(2026, 8, 8, 8, 55, tzinfo=TZ)) == []
 
 
-def test_overview_does_not_create_events_without_an_explicit_check_in(tmp_db):
+def test_overview_does_not_create_events_without_a_scheduled_check(tmp_db):
     from app.memory.companion import create_follow_up, get_companion_overview
 
     create_follow_up(

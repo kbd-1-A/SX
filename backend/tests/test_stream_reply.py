@@ -64,6 +64,37 @@ def test_stream_reply_yields_content_and_uses_streaming(monkeypatch):
     assert fake_client.chat.completions.last_kwargs["stream"] is True
 
 
+def test_stream_reply_passes_document_draft_mode_to_message_builder(monkeypatch):
+    fake_client = FakeClient(FakeStream(["# 文档\n"]))
+    observed = {}
+    monkeypatch.setattr(router_mod, "DEEPSEEK_API_KEY", "test-key")
+    monkeypatch.setattr(router_mod, "get_client", lambda: fake_client)
+
+    def fake_build_messages(*args, **kwargs):
+        observed.update(kwargs)
+        return [{"role": "system", "content": "x"}]
+
+    monkeypatch.setattr(router_mod, "build_messages", fake_build_messages)
+
+    result = asyncio.run(
+        _collect_document_draft()
+    )
+
+    assert result == ["# 文档\n"]
+    assert observed["document_draft"] is True
+
+
+async def _collect_document_draft():
+    return [
+        chunk
+        async for chunk in router_mod.stream_reply(
+            session_id=1,
+            user_msg="创建一个 md 文件",
+            document_draft=True,
+        )
+    ]
+
+
 def test_stream_reply_rejects_empty_stream(monkeypatch):
     monkeypatch.setattr(router_mod, "DEEPSEEK_API_KEY", "test-key")
     monkeypatch.setattr(router_mod, "get_client", lambda: FakeClient(FakeStream([])))

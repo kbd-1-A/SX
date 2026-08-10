@@ -2,6 +2,7 @@
 import { onMounted, ref, watch } from 'vue'
 import { NButton, NSpace, NTag, NEmpty } from 'naive-ui'
 import CompanionPanel from './CompanionPanel.vue'
+import MemoryManager from './MemoryManager.vue'
 import { useChatStore } from '../stores/chat'
 import { formatTaskTime } from '../lib/time'
 
@@ -92,6 +93,8 @@ watch(() => chat.messages.length, load)
     </n-space>
 
     <CompanionPanel :interaction-key="chat.userInteractionSequence" />
+
+    <MemoryManager :refresh-key="chat.userInteractionSequence" />
 
     <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px">
       <h3 style="margin: 0; font-size: 15px">记忆时间线</h3>

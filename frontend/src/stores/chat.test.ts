@@ -95,4 +95,114 @@ describe('chat voice replies', () => {
 
     expect(chat.userInteractionSequence).toBe(1)
   })
+
+  it('attaches a verified file artifact to the current assistant reply', async () => {
+    const chat = useChatStore()
+    await chat.init()
+    const socket = FakeWebSocket.instances[0]
+    socket.open()
+
+    expect(chat.send('帮我创建一个 md 文件')).toBe(true)
+    socket.message({
+      type: 'artifact.created',
+      artifact: {
+        id: 'artifact-1',
+        path: 'E:\\时序-output\\计划.md',
+        display_name: '计划.md',
+        target: 'output',
+        mime_type: 'text/markdown',
+        size_bytes: 42,
+        sha256: 'a'.repeat(64),
+      },
+    })
+    socket.message({ type: 'chunk', content: '已创建 Markdown 文件：计划.md' })
+    socket.message({ type: 'done' })
+
+    const reply = chat.messages[1]
+    expect(reply.content).toContain('已创建 Markdown 文件')
+    expect(reply.streaming).toBe(false)
+    expect(reply.artifacts).toEqual([
+      expect.objectContaining({ display_name: '计划.md', size_bytes: 42 }),
+    ])
+  })
+
+  it('keeps the artifact failure visible with the assistant reply', async () => {
+    const chat = useChatStore()
+    await chat.init()
+    const socket = FakeWebSocket.instances[0]
+    socket.open()
+
+    expect(chat.send('帮我创建一个 md 文件')).toBe(true)
+    socket.message({
+      type: 'artifact.failed',
+      code: 'destination_unavailable',
+      message: '目标文件夹无法使用。',
+    })
+    socket.message({ type: 'chunk', content: 'Markdown 文件没有创建成功。' })
+    socket.message({ type: 'done' })
+
+    expect(chat.messages[1].artifactFailure).toEqual({
+      code: 'destination_unavailable',
+      message: '目标文件夹无法使用。',
+    })
+  })
+
+  it('tracks research progress and verified source summaries', async () => {
+    const chat = useChatStore()
+    await chat.init()
+    const socket = FakeWebSocket.instances[0]
+    socket.open()
+
+    expect(chat.send('研究 agent 行业并创建 md')).toBe(true)
+    socket.message({ type: 'research.started', query: 'agent 行业' })
+    expect(chat.messages[1].research).toEqual({ status: 'running', query: 'agent 行业' })
+
+    socket.message({
+      type: 'research.completed',
+      research: {
+        query: 'agent 行业',
+        retrieved_at: '2026-08-10 15:00:00 +0800',
+        source_count: 2,
+        sources: [
+          { citation_id: 1, title: '官方资料', url: 'https://example.com/a', domain: 'example.com', source_type: 'official' },
+          { citation_id: 2, title: '行业资料', url: 'https://example.org/b', domain: 'example.org', source_type: 'organization' },
+        ],
+        warnings: [],
+      },
+    })
+    socket.message({ type: 'chunk', content: '研究文档已创建。' })
+    socket.message({ type: 'done' })
+
+    expect(chat.messages[1].research).toEqual(
+      expect.objectContaining({
+        status: 'completed',
+        source_count: 2,
+        sources: [expect.objectContaining({ domain: 'example.com' }), expect.any(Object)],
+      }),
+    )
+  })
+
+  it('shows research failure without converting it into a successful search state', async () => {
+    const chat = useChatStore()
+    await chat.init()
+    const socket = FakeWebSocket.instances[0]
+    socket.open()
+
+    expect(chat.send('研究 agent 行业并创建 md')).toBe(true)
+    socket.message({ type: 'research.started', query: 'agent 行业' })
+    socket.message({
+      type: 'research.failed',
+      code: 'search_unavailable',
+      message: '联网搜索暂时不可用。',
+    })
+    socket.message({ type: 'chunk', content: '已创建研究框架。' })
+    socket.message({ type: 'done' })
+
+    expect(chat.messages[1].research).toEqual({
+      status: 'failed',
+      query: 'agent 行业',
+      code: 'search_unavailable',
+      message: '联网搜索暂时不可用。',
+    })
+  })
 })

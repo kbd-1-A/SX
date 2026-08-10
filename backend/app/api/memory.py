@@ -91,7 +91,7 @@ def api_companion_overview():
 
 @router.post("/companion/check-in")
 def api_companion_check_in():
-    """Evaluate reminders only after an explicit user interaction."""
+    """Evaluate reminders from periodic polling or an immediate user check-in."""
     return get_companion_overview(evaluate=True)
 
 

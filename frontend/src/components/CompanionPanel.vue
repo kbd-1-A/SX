@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref, watch } from 'vue'
+import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   NAlert,
   NButton,
@@ -16,6 +16,8 @@ import { useChatStore } from '../stores/chat'
 
 const props = defineProps<{ interactionKey?: number }>()
 const chat = useChatStore()
+
+const REMINDER_CHECK_INTERVAL_MS = 15_000
 
 type Frequency = 'quiet' | 'normal' | 'active'
 type AlertKind = 'default' | 'info' | 'success' | 'warning' | 'error'
@@ -53,6 +55,9 @@ const loading = ref(false)
 const actionError = ref('')
 const notificationPermission = ref<'default' | 'granted' | 'denied' | 'unsupported'>('unsupported')
 const notification = useNotification()
+let reminderTimer: number | undefined
+let reminderCheckInFlight = false
+let stopped = false
 
 const frequencyOptions = [
   { label: '安静：只提醒重要事项', value: 'quiet' },
@@ -140,9 +145,11 @@ function announce(points: CarePoint[]) {
   }
 }
 
-async function load(checkForReminders = false) {
-  loading.value = true
-  actionError.value = ''
+async function load(checkForReminders = false, silent = false) {
+  if (!silent) {
+    loading.value = true
+    actionError.value = ''
+  }
   try {
     const response = await fetch(
       checkForReminders ? '/api/companion/check-in' : '/api/companion/overview',
@@ -157,10 +164,24 @@ async function load(checkForReminders = false) {
     if (checkForReminders) announce(data.new_care_points || [])
     if (!enabled.value) clearVisibleAlerts()
   } catch {
-    actionError.value = '主动陪伴暂时没有连上，稍后会再试。'
+    if (!silent) actionError.value = '主动陪伴暂时没有连上，稍后会再试。'
   } finally {
-    loading.value = false
+    if (!silent) loading.value = false
   }
+}
+
+async function checkForReminders(silent = true) {
+  if (stopped || !enabled.value || reminderCheckInFlight) return
+  reminderCheckInFlight = true
+  try {
+    await load(true, silent)
+  } finally {
+    reminderCheckInFlight = false
+  }
+}
+
+function handleVisibilityChange() {
+  if (document.visibilityState === 'visible') void checkForReminders()
 }
 
 async function updateFrequency(value: string | number | null) {
@@ -189,7 +210,7 @@ async function updateEnabled(value: boolean) {
     })
     if (!response.ok) throw new Error('companion_enabled_update_failed')
     enabled.value = (await response.json()).enabled
-    if (enabled.value) await load(true)
+    if (enabled.value) await checkForReminders(false)
     else clearVisibleAlerts()
   } catch {
     actionError.value = '主动陪伴开关暂时没能更新。'
@@ -277,15 +298,24 @@ function dueLabel(item: FollowUp) {
   return item.due_at ? `时间：${item.due_at.slice(0, 16)}` : '等你方便时再继续'
 }
 
-onMounted(() => {
+onMounted(async () => {
   notification.destroyAll()
   syncNotificationPermission()
-  load()
+  await load()
+  if (stopped) return
+  void checkForReminders()
+  reminderTimer = window.setInterval(() => void checkForReminders(), REMINDER_CHECK_INTERVAL_MS)
+  document.addEventListener('visibilitychange', handleVisibilityChange)
+})
+onBeforeUnmount(() => {
+  stopped = true
+  if (reminderTimer !== undefined) window.clearInterval(reminderTimer)
+  document.removeEventListener('visibilitychange', handleVisibilityChange)
 })
 watch(
   () => props.interactionKey,
   (value, previous) => {
-    if (value && value !== previous) load(true)
+    if (value && value !== previous) void checkForReminders()
   },
 )
 </script>
@@ -312,7 +342,7 @@ watch(
 
     <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px">
       <span style="font-size: 11px; color: #999">
-        {{ notificationPermission === 'granted' ? '系统提醒已开启' : '页面保持打开即可收到提醒' }}
+        {{ notificationPermission === 'granted' ? '系统提醒已开启' : '页面提醒定时检查中' }}
       </span>
       <n-button
         v-if="notificationPermission === 'default'"

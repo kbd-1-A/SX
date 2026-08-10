@@ -7,6 +7,43 @@ export interface ChatMessage {
   content: string
   streaming?: boolean
   proactiveEventId?: number
+  artifacts?: ChatArtifact[]
+  artifactFailure?: ArtifactFailure
+  research?: ResearchState
+}
+
+export interface ChatArtifact {
+  id: string
+  path: string
+  display_name: string
+  target: 'desktop' | 'output'
+  mime_type: 'text/markdown'
+  size_bytes: number
+  sha256: string
+}
+
+export interface ArtifactFailure {
+  code: string
+  message: string
+}
+
+export interface ResearchSource {
+  citation_id: number
+  title: string
+  url: string
+  domain: string
+  source_type: 'official' | 'organization' | 'secondary'
+}
+
+export interface ResearchState {
+  status: 'running' | 'completed' | 'failed'
+  query: string
+  retrieved_at?: string
+  source_count?: number
+  sources?: ResearchSource[]
+  warnings?: string[]
+  code?: string
+  message?: string
 }
 
 export interface ChatTask {
@@ -161,6 +198,19 @@ export const useChatStore = defineStore('chat', () => {
     currentEmotion.value = { ...DEFAULT_EMOTION }
   }
 
+  function ensureStreamingAssistantMessage() {
+    const last = messages.value[messages.value.length - 1]
+    if (last?.role === 'assistant' && last.streaming) return last
+    const message: ChatMessage = {
+      id: -1,
+      role: 'assistant',
+      content: '',
+      streaming: true,
+    }
+    messages.value.push(message)
+    return message
+  }
+
   function wsUrl() {
     const proto = location.protocol === 'https:' ? 'wss' : 'ws'
     const query = currentSessionId.value ? `?session_id=${currentSessionId.value}` : ''
@@ -211,18 +261,46 @@ export const useChatStore = defineStore('chat', () => {
         return
       }
       if (data.type === 'chunk') {
-        const last = messages.value[messages.value.length - 1]
-        if (last && last.streaming) {
-          last.content += data.content
-        } else {
-          messages.value.push({
-            id: -1,
-            role: 'assistant',
-            content: data.content,
-            streaming: true,
-          })
-        }
+        const last = ensureStreamingAssistantMessage()
+        last.content += data.content
         if (activeReply) emitReply({ type: 'chunk', ...activeReply, content: data.content })
+      } else if (data.type === 'artifact.created') {
+        const artifact = data.artifact as ChatArtifact | undefined
+        if (!artifact?.id) return
+        const last = ensureStreamingAssistantMessage()
+        const artifacts = last.artifacts || (last.artifacts = [])
+        if (!artifacts.some((item) => item.id === artifact.id)) artifacts.push(artifact)
+      } else if (data.type === 'artifact.failed') {
+        const last = ensureStreamingAssistantMessage()
+        last.artifactFailure = {
+          code: data.code || 'file_create_failed',
+          message: data.message || '文件没有创建成功。',
+        }
+      } else if (data.type === 'research.started') {
+        const last = ensureStreamingAssistantMessage()
+        last.research = {
+          status: 'running',
+          query: data.query || '当前主题',
+        }
+      } else if (data.type === 'research.completed') {
+        const last = ensureStreamingAssistantMessage()
+        const research = data.research || {}
+        last.research = {
+          status: 'completed',
+          query: research.query || last.research?.query || '当前主题',
+          retrieved_at: research.retrieved_at,
+          source_count: research.source_count || 0,
+          sources: research.sources || [],
+          warnings: research.warnings || [],
+        }
+      } else if (data.type === 'research.failed') {
+        const last = ensureStreamingAssistantMessage()
+        last.research = {
+          status: 'failed',
+          query: last.research?.query || '当前主题',
+          code: data.code || 'research_failed',
+          message: data.message || '联网研究没有完成。',
+        }
       } else if (data.type === 'done') {
         const last = messages.value[messages.value.length - 1]
         if (last?.streaming) last.streaming = false
