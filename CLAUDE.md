@@ -105,11 +105,20 @@
 - 新增 `frontend/src/utils/chatMarkdown.ts` 及测试，依赖 `markdown-it` 和 `@types/markdown-it`；后端回归测试覆盖旧前缀清理。
 - 验证：后端 `178 passed`；前端 `31 passed`；`npm.cmd run build` 通过；浏览器验收确认加粗节点正常渲染、消息时间和裸露 `**` 均未显示。
 
+### 陪伴模式 P0（粒子球，2026-08-12）
+- 新增**陪伴模式**：粒子球为视觉主体、对话退为字幕浮层；与聊天模式互切，同一份 chat store 两种渲染，WS 协议与对话链路零改动。
+- 粒子球 `frontend/src/components/ParticleOrb.vue`：three.js Points（15000 粒子，75% 体积聚集球心 + 25% 表面轮廓）+ GLSL simplex noise 形变 + 加色混合发光；说话时高频抖动 + 整球脉冲 + 提亮。
+- 样式映射 `frontend/src/lib/orbStyle.ts`（纯函数可单测）：面具定色相（默认金粒子黑底），情绪+intensity(0-3) 定运动节奏；crisis 情绪压到最慢最稳。
+- 语音进陪伴模式：新增 `frontend/src/composables/useVoiceConversation.ts`（从 RealtimeFoundationPanel 提炼的采集→转写→回复→TTS→插话打断装配）；陪伴模式控制条带麦克风按钮，球体有 listening 状态。
+- **修复 ASR 模型缺失**：`.env` 新增 `ASR_MODEL=base`（原默认指向不存在的 `backend/models/faster-whisper-base`）；模型经 `HF_HUB_DISABLE_XET=1 HF_ENDPOINT=https://hf-mirror.com` 下载到 HF 缓存。
+- 麦克风权限被拒后给出可操作引导（地址栏锁图标改权限），不再卡 error 态。
+- 验证：前端 `39 passed`（新增 orbStyle 8 个）；`npm run build` 通过。
+
 ### 代码结构与运行
 - **灵魂唯一来源**：`backend/persona/shisu.md`——改它 = 改时叙性格，前后端都以它为准
 - 人格分层：`persona/shisu.md`（核心自我）+ `persona/masks/`（4 面具表达层）；路由在 `app/agents/mask.py`（规则词表 + LLM 兜底）
 - 代码分层：`app/api/`（WS+REST）→ `app/agents/`（persona 加载 + DeepSeek 路由 + 面具）→ `app/memory/`（SQLite 读写 + 画像 + 自我记忆 `self.py`）→ `app/db/`（schema）
-- 前端：对话区 + 侧边面板；`VrmAvatar.vue`/`lib/maskVrm.ts` 已实现但界面未启用（数字人方案待定）
+- 前端：对话区 + 侧边面板（聊天模式）+ 陪伴模式（粒子球，2026-08-12 起）；`VrmAvatar.vue`/`lib/maskVrm.ts` 已实现但界面未启用（数字人方案待定）
 - 启动：`cd backend && uvicorn app.main:app --port 8000`（**不带 `--reload`**，中文路径假重载，改代码手动重启）；另开终端 `cd frontend && npm run dev`
 - 前端 WS 连 **`/ws/chat`**（勿改成 `/ws`），经 Vite 代理转后端 8000
 - 测试：后端在 `backend/tests/` 使用 `pytest`；前端使用 `npm test`（vitest）；修改后端代码需手动重启运行中的 uvicorn。
@@ -157,3 +166,8 @@
 - **Vite 中文路径不受影响**：Vite dev 对模块请求**实时编译**，改 `.vue`/`.ts` 后刷新页面即新代码——与 uvicorn 的 watch 机制不同，中文目录下 Vite 无需重启（2026-08-06）。
 - **数字人的难点不是渲染是观感**：渲染管线（相机/剔除/材质）都能修，但 three-vrm 的示例模型 `three-vrm-girl` 观感廉价、用户不接受。真做数字人优先找观感好的模型或 VRoid 自捏，技术方案（three-vrm + 面具表情联动）可复用（2026-08-06）。
 - **PowerShell 管道给 Python stdin 传中文可能导致测试文本乱码**：用 `@'...'@ | python -` 跑内联脚本时，中文字符串可能在 Python 侧变成问号，导致端到端测试写入乱码消息、记忆抽取不命中。验证中文 WebSocket/抽取逻辑时，用 Unicode escape 构造字符串，或写入 UTF-8 测试文件后运行；人工测试写入真实 SQLite 后要精确清理测试消息和记忆锚点（2026-08-07）。
+- **HF 镜像下载报 xet CAS 401**：hf-mirror + 新版 huggingface_hub 默认走 xet 传输，未授权直接 401。解法：`HF_HUB_DISABLE_XET=1` 环境变量禁用 xet，回退普通 HTTP 下载即可（2026-08-12）。
+- **three.js Points 粒子尺寸必须用投影系数换算**：`gl_PointSize = 世界尺寸 × (视口高×dpr / (2·tan(fov/2))) / -mv.z`，且视口 resize 时要更新该 uniform。拍脑袋的常数在不同视口下会小到完全不可见（2026-08-12）。
+- **加色混合（AdditiveBlending）下密集粒子极易过曝成白团**：球心堆叠区域的提亮参数要克制（vCore 加成 ≤0.3、单粒子 alpha ≤0.6），否则金色球变白色球（2026-08-12）。
+- **浏览器 SpeechSynthesis 不走 Web Audio**：拿不到 TTS 真实音量，语音律动只能用合成包络（复合正弦模拟人声强弱，攻击快释放慢）；要真实振幅需换服务端 TTS（2026-08-12）。
+- **`<script setup>` 里 `export type` 给其他组件导入不可靠**：跨组件共享的类型放独立 `.ts`（如 OrbState 放 orbStyle.ts）（2026-08-12）。

@@ -14,3 +14,4 @@ __pycache__/
 deliverables/
 frontend/tsconfig.tsbuildinfo
 backend/.tmp_pytest_run/
+.workbuddy/
