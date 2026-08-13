@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 import app.api.chat as chat_mod
 from app.agents.errors import AgentTimeoutError
 from app.tools.files import MarkdownArtifact, MarkdownFileToolError
+from app.tools.music import LocalMusicTrack
 from app.tools.research import ResearchError, ResearchResult, ResearchSource
 
 EMOTION_STATE = {
@@ -98,7 +99,7 @@ def test_ws_chat_creates_verified_markdown_artifact(monkeypatch):
     patch_chat_dependencies(monkeypatch)
     artifact = MarkdownArtifact(
         id="artifact-1",
-        path=r"E:\\时序-output\\行业分析.md",
+        path=r"E:\\Kairos-output\\行业分析.md",
         display_name="行业分析.md",
         target="output",
         mime_type="text/markdown",
@@ -122,7 +123,7 @@ def test_ws_chat_creates_verified_markdown_artifact(monkeypatch):
     assert created == {"type": "artifact.created", "artifact": artifact.as_event()}
     assert chunk["type"] == "chunk"
     assert "已创建 Markdown 文件：行业分析.md" in chunk["content"]
-    assert r"E:\\时序-output\\行业分析.md" in chunk["content"]
+    assert r"E:\\Kairos-output\\行业分析.md" in chunk["content"]
     assert done["type"] == "done"
 
 
@@ -169,7 +170,7 @@ def test_ws_chat_researches_sources_before_creating_document(monkeypatch):
     )
     artifact = MarkdownArtifact(
         id="research-artifact",
-        path=r"E:\时序-output\agent行业.md",
+        path=r"E:\Kairos-output\agent行业.md",
         display_name="agent行业.md",
         target="output",
         mime_type="text/markdown",
@@ -222,7 +223,7 @@ def test_ws_chat_creates_research_framework_when_search_fails(monkeypatch):
     patch_chat_dependencies(monkeypatch)
     artifact = MarkdownArtifact(
         id="framework-artifact",
-        path=r"E:\时序-output\研究框架.md",
+        path=r"E:\Kairos-output\研究框架.md",
         display_name="研究框架.md",
         target="output",
         mime_type="text/markdown",
@@ -270,3 +271,78 @@ def test_ws_chat_creates_research_framework_when_search_fails(monkeypatch):
     assert "待核实问题" in captured["content"]
     assert "已创建 Markdown 文件" in chunk["content"]
     assert done["type"] == "done"
+
+
+def test_ws_chat_only_reports_music_playing_after_browser_confirmation(monkeypatch):
+    patch_chat_dependencies(monkeypatch)
+    track = LocalMusicTrack(
+        id="track-1",
+        title="慢慢来",
+        artist="夜晚",
+        mime_type="audio/mpeg",
+    )
+
+    async def unexpected_stream(*args, **kwargs) -> AsyncIterator[str]:
+        raise AssertionError("音乐请求不应由模型伪造播放结果")
+        yield ""
+
+    monkeypatch.setattr(chat_mod, "stream_reply", unexpected_stream)
+    monkeypatch.setattr(chat_mod, "select_local_music_track", lambda query: track)
+
+    with TestClient(make_app()).websocket_connect("/ws/chat") as ws:
+        ws.send_json({"type": "message", "content": "我今天很难受，帮我放一首歌"})
+        loading = ws.receive_json()
+        ready = ws.receive_json()
+        chunk = ws.receive_json()
+        done = ws.receive_json()
+
+        ws.send_json(
+            {
+                "type": "media.status",
+                "playback_id": ready["media"]["playback_id"],
+                "status": "playing",
+            }
+        )
+        playing = ws.receive_json()
+
+    assert loading["type"] == "media.loading"
+    assert ready["type"] == "media.ready"
+    assert ready["media"]["title"] == "慢慢来"
+    assert "正在播放" not in chunk["content"]
+    assert done["type"] == "done"
+    assert playing == {
+        "type": "media.playing",
+        "playback_id": ready["media"]["playback_id"],
+    }
+
+
+def test_ws_chat_keeps_autoplay_blocked_as_an_actionable_state(monkeypatch):
+    patch_chat_dependencies(monkeypatch)
+    track = LocalMusicTrack(
+        id="track-1",
+        title="慢慢来",
+        artist="夜晚",
+        mime_type="audio/mpeg",
+    )
+    monkeypatch.setattr(chat_mod, "select_local_music_track", lambda query: track)
+
+    with TestClient(make_app()).websocket_connect("/ws/chat") as ws:
+        ws.send_json({"type": "message", "content": "放一首歌"})
+        ws.receive_json()
+        ready = ws.receive_json()
+        ws.receive_json()
+        ws.receive_json()
+        ws.send_json(
+            {
+                "type": "media.status",
+                "playback_id": ready["media"]["playback_id"],
+                "status": "autoplay_blocked",
+            }
+        )
+        blocked = ws.receive_json()
+
+    assert blocked == {
+        "type": "media.autoplay_blocked",
+        "playback_id": ready["media"]["playback_id"],
+        "message": "浏览器需要你点击一次播放。",
+    }

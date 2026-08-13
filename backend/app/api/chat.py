@@ -34,6 +34,11 @@ from app.tools.files import (
     derive_markdown_filename,
     parse_file_creation_request,
 )
+from app.tools.music import (
+    MusicToolError,
+    parse_music_query,
+    select_local_music_track,
+)
 from app.tools.research import (
     ResearchError,
     ResearchResult,
@@ -121,6 +126,7 @@ async def ws_chat(ws: WebSocket) -> None:
 
     current_mask: str | None = None  # None = 本会话还没定过面具
     turns_since_switch = 0
+    active_playback_id: str | None = None
 
     while True:
         try:
@@ -137,6 +143,46 @@ async def ws_chat(ws: WebSocket) -> None:
         except json.JSONDecodeError:
             if not await _send_error(ws, "这条消息没有读懂，请再发一次。", "invalid_json"):
                 break
+            continue
+        if data.get("type") == "media.status":
+            playback_id = data.get("playback_id")
+            status = data.get("status")
+            if playback_id != active_playback_id:
+                continue
+            event_by_status = {
+                "playing": "media.playing",
+                "paused": "media.paused",
+                "stopped": "media.stopped",
+                "autoplay_blocked": "media.autoplay_blocked",
+                "failed": "media.failed",
+            }
+            event_type = event_by_status.get(status)
+            if not event_type:
+                continue
+            event = {"type": event_type, "playback_id": playback_id}
+            if status == "autoplay_blocked":
+                event["message"] = "浏览器需要你点击一次播放。"
+            elif status == "failed":
+                event["code"] = data.get("code", "media_playback_failed")
+                event["message"] = data.get("message", "音频播放失败。")
+            await ws.send_text(json.dumps(event, ensure_ascii=False))
+            if status == "stopped":
+                active_playback_id = None
+            continue
+        if data.get("type") == "media.command":
+            playback_id = data.get("playback_id")
+            command = data.get("command")
+            if playback_id == active_playback_id and command in {"play", "pause", "stop"}:
+                await ws.send_text(
+                    json.dumps(
+                        {
+                            "type": "media.command",
+                            "playback_id": playback_id,
+                            "command": command,
+                        },
+                        ensure_ascii=False,
+                    )
+                )
             continue
         if data.get("type") != "message":
             if not await _send_error(ws, "暂时只支持发送文字消息。", "unsupported_message"):
@@ -160,6 +206,10 @@ async def ws_chat(ws: WebSocket) -> None:
         request_id = uuid4().hex[:12]
         started_at = perf_counter()
         action_kind = detect_action_request(content)
+        media_command = None
+        normalized_content = "".join(content.split())
+        if normalized_content in {"停止音乐", "停止播放", "停一下音乐", "暂停音乐", "暂停播放"}:
+            media_command = "stop" if normalized_content.startswith("停止") or normalized_content.startswith("停") else "pause"
         file_request = (
             parse_file_creation_request(content) if action_kind == "file" else None
         )
@@ -228,7 +278,48 @@ async def ws_chat(ws: WebSocket) -> None:
         try:
             research_result: ResearchResult | None = None
             research_error: ResearchError | None = None
-            if file_request and research_request and not file_request.unsupported_reason:
+            if media_command:
+                if active_playback_id:
+                    await ws.send_text(
+                        json.dumps(
+                            {
+                                "type": "media.command",
+                                "playback_id": active_playback_id,
+                                "command": media_command,
+                            },
+                            ensure_ascii=False,
+                        )
+                    )
+                    reply = "好，先把音乐停一下。" if media_command == "stop" else "好，先暂停。"
+                else:
+                    reply = "现在没有正在播放的音乐。"
+                await ws.send_text(json.dumps({"type": "chunk", "content": reply}, ensure_ascii=False))
+                assistant_id = add_message(session_id, "assistant", reply)
+            elif action_kind == "media":
+                await ws.send_text(json.dumps({"type": "media.loading"}, ensure_ascii=False))
+                try:
+                    track = select_local_music_track(parse_music_query(content))
+                except MusicToolError as exc:
+                    await ws.send_text(
+                        json.dumps(
+                            {"type": "media.failed", "code": exc.code, "message": exc.message},
+                            ensure_ascii=False,
+                        )
+                    )
+                    reply = f"我还没能开始播放：{exc.message}"
+                else:
+                    playback_id = f"playback_{uuid4().hex[:12]}"
+                    active_playback_id = playback_id
+                    await ws.send_text(
+                        json.dumps(
+                            {"type": "media.ready", "media": track.as_event(playback_id)},
+                            ensure_ascii=False,
+                        )
+                    )
+                    reply = f"我找到一首：{track.title} - {track.artist}。浏览器如果拦住自动播放，点一下播放就好。"
+                await ws.send_text(json.dumps({"type": "chunk", "content": reply}, ensure_ascii=False))
+                assistant_id = add_message(session_id, "assistant", reply)
+            elif file_request and research_request and not file_request.unsupported_reason:
                 await ws.send_text(
                     json.dumps(
                         {
@@ -288,7 +379,10 @@ async def ws_chat(ws: WebSocket) -> None:
                         )
                     )
 
-            if file_request and file_request.unsupported_reason:
+            if media_command or action_kind == "media":
+                # 媒体请求已经在上面的受控 Provider 分支处理，不再进入 LLM。
+                pass
+            elif file_request and file_request.unsupported_reason:
                 reply = file_request.unsupported_reason
                 await ws.send_text(
                     json.dumps(

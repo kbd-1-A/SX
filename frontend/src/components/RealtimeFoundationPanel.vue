@@ -13,7 +13,6 @@ import {
   NTag,
 } from 'naive-ui'
 import { MicrophoneCapture } from '../audio/capture'
-import { listAudioInputs, type AudioInputDevice } from '../audio/devices'
 import { VoiceProtocolClient } from '../audio/voiceClient'
 import { VoiceResponseController } from '../audio/voiceResponse'
 import { useAgentStateStore } from '../stores/agentState'
@@ -28,8 +27,6 @@ const captureTransitioning = ref(false)
 const captureError = ref('')
 const lastTranscript = ref('')
 const transcriptionStatus = ref<'idle' | 'listening' | 'processing' | 'error'>('idle')
-const audioInputs = ref<AudioInputDevice[]>([])
-const selectedDeviceId = ref('')
 let client: VoiceProtocolClient | null = null
 let capture: MicrophoneCapture | null = null
 let unsubscribeReply: (() => void) | null = null
@@ -60,8 +57,12 @@ const inputLevel = computed(() => Math.round(agent.amplitude * 100))
 const voiceTurnBusy = computed(() => transcriptionStatus.value === 'processing')
 const audioInputOptions = computed(() => [
   { label: '系统默认麦克风', value: '' },
-  ...audioInputs.value.map((device) => ({ label: device.label, value: device.deviceId })),
+  ...agent.audioInputs.map((device) => ({ label: device.label, value: device.deviceId })),
 ])
+const selectedDeviceId = computed({
+  get: () => agent.selectedDeviceId,
+  set: (value: string) => agent.setSelectedDeviceId(value),
+})
 
 const transcriptionLabel = computed(
   () =>
@@ -148,17 +149,7 @@ function deliverTranscript(text: string) {
 }
 
 async function refreshAudioInputs() {
-  try {
-    audioInputs.value = await listAudioInputs()
-    if (
-      selectedDeviceId.value &&
-      !audioInputs.value.some((device) => device.deviceId === selectedDeviceId.value)
-    ) {
-      selectedDeviceId.value = ''
-    }
-  } catch {
-    audioInputs.value = []
-  }
+  await agent.refreshAudioInputs()
 }
 
 async function syncPermission() {

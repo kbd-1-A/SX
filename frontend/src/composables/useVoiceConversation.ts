@@ -119,7 +119,10 @@ export function useVoiceConversation() {
     try {
       await makeClient().connect()
       makeClient().configureSources(agent.sources)
-      await makeCapture().start()
+      // 拉一次设备列表：浏览器只在授予麦克风权限后才返回真实 label，
+      // 这里取一次最新值，确保语音开启后下方切换设备能看到真实名称。
+      await agent.refreshAudioInputs()
+      await makeCapture().start(agent.selectedDeviceId || undefined)
       agent.setMicPermission('granted')
       agent.setCaptureActive(true)
       transcriptionStatus.value = 'listening'

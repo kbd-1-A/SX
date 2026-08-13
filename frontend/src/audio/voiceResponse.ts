@@ -1,5 +1,6 @@
 import type { ChatReplyEvent } from '../stores/chat'
 import { BrowserSpeechOutput, SpeechQueue, type SpeechOutput } from './speechSynthesis'
+import { audioFocus, type AudioFocusManager } from './audioFocus'
 
 const MAX_SEGMENT_CHARS = 90
 const SENTENCE_ENDINGS = /[。！？!?；;\n]/
@@ -52,9 +53,11 @@ export class VoiceResponseController {
   constructor(
     private readonly callbacks: VoiceResponseCallbacks,
     output: SpeechOutput = new BrowserSpeechOutput(),
+    private readonly focus: AudioFocusManager = audioFocus,
   ) {
     this.queue = new SpeechQueue(output, {
       onStart: () => {
+        this.focus.claimSpeech()
         if (this.requestId) this.callbacks.onPlaybackStart(this.requestId)
       },
       onIdle: () => {

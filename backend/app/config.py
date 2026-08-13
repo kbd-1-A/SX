@@ -22,7 +22,7 @@ MASK_CLASSIFY_TIMEOUT_SECONDS = float(
     os.getenv("MASK_CLASSIFY_TIMEOUT_SECONDS", "5")
 )
 MAX_USER_MESSAGE_CHARS = int(os.getenv("MAX_USER_MESSAGE_CHARS", "4000"))
-ARTIFACT_OUTPUT_DIR = Path(os.getenv("ARTIFACT_OUTPUT_DIR", r"E:\时序-output"))
+ARTIFACT_OUTPUT_DIR = Path(os.getenv("ARTIFACT_OUTPUT_DIR", r"E:\Kairos-output"))
 MAX_MARKDOWN_ARTIFACT_BYTES = int(
     os.getenv("MAX_MARKDOWN_ARTIFACT_BYTES", "500000")
 )
@@ -38,6 +38,10 @@ RESEARCH_MAX_RESPONSE_BYTES = int(os.getenv("RESEARCH_MAX_RESPONSE_BYTES", "1000
 RESEARCH_USER_AGENT = os.getenv(
     "RESEARCH_USER_AGENT", "Mozilla/5.0 (compatible; ShixuResearch/1.0)"
 )
+
+_music_library = os.getenv("MUSIC_LIBRARY_DIR", "").strip()
+MUSIC_LIBRARY_DIR = Path(_music_library).expanduser() if _music_library else None
+MUSIC_MAX_TRACKS = int(os.getenv("MUSIC_MAX_TRACKS", "500"))
 
 ASR_MODEL = os.getenv(
     "ASR_MODEL",

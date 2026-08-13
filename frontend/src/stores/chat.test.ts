@@ -107,7 +107,7 @@ describe('chat voice replies', () => {
       type: 'artifact.created',
       artifact: {
         id: 'artifact-1',
-        path: 'E:\\时序-output\\计划.md',
+        path: 'E:\\Kairos-output\\计划.md',
         display_name: '计划.md',
         target: 'output',
         mime_type: 'text/markdown',
@@ -204,5 +204,62 @@ describe('chat voice replies', () => {
       code: 'search_unavailable',
       message: '联网搜索暂时不可用。',
     })
+  })
+
+  it('keeps media ready until the browser confirms actual playback', async () => {
+    const chat = useChatStore()
+    await chat.init()
+    const socket = FakeWebSocket.instances[0]
+    socket.open()
+
+    expect(chat.send('放一首歌')).toBe(true)
+    socket.message({
+      type: 'media.ready',
+      media: {
+        playback_id: 'playback-1',
+        track_id: 'track-1',
+        title: '慢慢来',
+        artist: '夜晚',
+        provider_id: 'local_library',
+        mime_type: 'audio/mpeg',
+        stream_url: '/api/media/local/track-1',
+      },
+    })
+
+    expect(chat.messages[1].media).toEqual(expect.objectContaining({ status: 'ready', title: '慢慢来' }))
+
+    socket.message({ type: 'media.playing', playback_id: 'playback-1' })
+
+    expect(chat.messages[1].media).toEqual(expect.objectContaining({ status: 'playing' }))
+  })
+
+  it('keeps browser autoplay blocking visible instead of claiming playback', async () => {
+    const chat = useChatStore()
+    await chat.init()
+    const socket = FakeWebSocket.instances[0]
+    socket.open()
+
+    expect(chat.send('放一首歌')).toBe(true)
+    socket.message({
+      type: 'media.ready',
+      media: {
+        playback_id: 'playback-1',
+        track_id: 'track-1',
+        title: '慢慢来',
+        artist: '夜晚',
+        provider_id: 'local_library',
+        mime_type: 'audio/mpeg',
+        stream_url: '/api/media/local/track-1',
+      },
+    })
+    socket.message({
+      type: 'media.autoplay_blocked',
+      playback_id: 'playback-1',
+      message: '浏览器需要你点击一次播放。',
+    })
+
+    expect(chat.messages[1].media).toEqual(
+      expect.objectContaining({ status: 'autoplay_blocked', message: '浏览器需要你点击一次播放。' }),
+    )
   })
 })

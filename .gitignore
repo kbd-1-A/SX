@@ -10,7 +10,7 @@ __pycache__/
 .tmp_screenshots/
 .tmp_video_analysis/
 .tmp_video_tools/
-.tmp_voice_*.log
+.tmp_*.log
 deliverables/
 frontend/tsconfig.tsbuildinfo
 backend/.tmp_pytest_run/

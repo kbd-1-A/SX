@@ -1,6 +1,8 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import { FOUNDATION_REPLAY } from '../fixtures/foundationReplay'
+import { listAudioInputs } from '../audio/devices'
+import type { AudioInputDevice } from '../audio/devices'
 import type {
   AgentEmotion,
   AgentEventLogEntry,
@@ -11,7 +13,17 @@ import type {
 } from '../types/agentEvents'
 
 const SOURCE_STORAGE_KEY = 'shishu.data-sources.v1'
+const SELECTED_DEVICE_STORAGE_KEY = 'shishu.selected-mic-device.v1'
 const MAX_LOG_ENTRIES = 80
+
+function loadSelectedDeviceId(): string {
+  if (typeof localStorage === 'undefined') return ''
+  try {
+    return localStorage.getItem(SELECTED_DEVICE_STORAGE_KEY) || ''
+  } catch {
+    return ''
+  }
+}
 
 export const DEFAULT_DATA_SOURCES: DataSourceSettings = {
   microphone: true,
@@ -49,6 +61,8 @@ export const useAgentStateStore = defineStore('agentState', () => {
   const eventLog = ref<AgentEventLogEntry[]>([])
   const replaying = ref(false)
   const lastError = ref('')
+  const selectedDeviceId = ref<string>(loadSelectedDeviceId())
+  const audioInputs = ref<AudioInputDevice[]>([])
   let logSequence = 0
   let replayToken = 0
 
@@ -172,6 +186,38 @@ export const useAgentStateStore = defineStore('agentState', () => {
     deviceConnected.value = connected
   }
 
+  function setSelectedDeviceId(deviceId: string) {
+    selectedDeviceId.value = deviceId
+    if (typeof localStorage !== 'undefined') {
+      try {
+        if (deviceId) {
+          localStorage.setItem(SELECTED_DEVICE_STORAGE_KEY, deviceId)
+        } else {
+          localStorage.removeItem(SELECTED_DEVICE_STORAGE_KEY)
+        }
+      } catch {
+        // 隐私模式或存储配额异常不应阻断语音采集。
+      }
+    }
+  }
+
+  async function refreshAudioInputs() {
+    try {
+      const list = await listAudioInputs()
+      audioInputs.value = list
+      // 之前选过的设备如果已经离线（被拔/驱动掉了），就回退到系统默认，
+      // 避免 getUserMedia({ exact }) 直接抛 NotFoundError。
+      if (
+        selectedDeviceId.value &&
+        !list.some((device) => device.deviceId === selectedDeviceId.value)
+      ) {
+        setSelectedDeviceId('')
+      }
+    } catch {
+      audioInputs.value = []
+    }
+  }
+
   function clearLog() {
     eventLog.value = []
   }
@@ -239,5 +285,9 @@ export const useAgentStateStore = defineStore('agentState', () => {
     resetRuntime,
     cancelReplay,
     replay,
+    selectedDeviceId,
+    audioInputs,
+    setSelectedDeviceId,
+    refreshAudioInputs,
   }
 })

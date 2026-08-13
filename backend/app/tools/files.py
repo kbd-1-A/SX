@@ -107,17 +107,17 @@ def parse_file_creation_request(text: str) -> FileCreationRequest | None:
     lowered = normalized.lower()
     if "桌面" in normalized or "desktop" in lowered:
         target = "desktop"
-    elif "时序-output" in lowered or "时叙-output" in lowered or "输出目录" in normalized:
+    elif "kairos-output" in lowered or "输出目录" in normalized:
         target = "output"
 
     unsupported_reason: str | None = None
     extension = _OTHER_EXTENSION.search(normalized)
     if extension and extension.group(1).lower() != "md":
         unsupported_reason = "第一版文件工具只支持创建 .md Markdown 文件。"
-    elif _UNSAFE_ABSOLUTE_PATH.search(normalized) and "时序-output" not in lowered:
-        unsupported_reason = "目前只能保存到 Windows 桌面或 E:\\时序-output，不能写入其他路径。"
+    elif _UNSAFE_ABSOLUTE_PATH.search(normalized) and "kairos-output" not in lowered:
+        unsupported_reason = "目前只能保存到 Windows 桌面或 E:\\Kairos-output，不能写入其他路径。"
     elif target == "output" and _UNSUPPORTED_DESTINATION.search(normalized):
-        unsupported_reason = "目前只能保存到 Windows 桌面或 E:\\时序-output，其他目录需要后续授权。"
+        unsupported_reason = "目前只能保存到 Windows 桌面或 E:\\Kairos-output，其他目录需要后续授权。"
 
     match = _NAMED_MARKDOWN.search(normalized)
     filename = _clean_extracted_filename(match.group("filename")) if match else None

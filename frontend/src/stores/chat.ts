@@ -10,6 +10,28 @@ export interface ChatMessage {
   artifacts?: ChatArtifact[]
   artifactFailure?: ArtifactFailure
   research?: ResearchState
+  media?: ChatMedia
+}
+
+export type MediaStatus = 'loading' | 'ready' | 'playing' | 'paused' | 'stopped' | 'autoplay_blocked' | 'failed'
+
+export interface ChatMedia {
+  playback_id: string
+  track_id: string
+  title: string
+  artist: string
+  provider_id: string
+  mime_type: string
+  stream_url: string
+  status: MediaStatus
+  message?: string
+  code?: string
+}
+
+export interface MediaCommand {
+  playback_id: string
+  command: 'play' | 'pause' | 'stop'
+  sequence: number
 }
 
 export interface ChatArtifact {
@@ -124,6 +146,8 @@ export const useChatStore = defineStore('chat', () => {
   let pendingVoiceMessages: PendingVoiceMessage[] = []
   const replyListeners = new Set<(event: ChatReplyEvent) => void>()
   let requestSequence = 0
+  const lastMediaCommand = ref<MediaCommand | null>(null)
+  let mediaCommandSequence = 0
 
   function emitReply(event: ChatReplyEvent) {
     for (const listener of replyListeners) listener(event)
@@ -301,6 +325,38 @@ export const useChatStore = defineStore('chat', () => {
           code: data.code || 'research_failed',
           message: data.message || '联网研究没有完成。',
         }
+      } else if (data.type === 'media.loading') {
+        const last = ensureStreamingAssistantMessage()
+        last.media = {
+          playback_id: '',
+          track_id: '',
+          title: '正在寻找歌曲',
+          artist: '',
+          provider_id: 'local_library',
+          mime_type: 'audio/mpeg',
+          stream_url: '',
+          status: 'loading',
+        }
+      } else if (data.type === 'media.ready') {
+        const media = data.media as Omit<ChatMedia, 'status'> | undefined
+        if (!media?.playback_id) return
+        const last = ensureStreamingAssistantMessage()
+        last.media = { ...media, status: 'ready' }
+      } else if (data.type === 'media.command') {
+        const command = data.command as MediaCommand['command'] | undefined
+        if (!data.playback_id || !command) return
+        lastMediaCommand.value = {
+          playback_id: data.playback_id,
+          command,
+          sequence: ++mediaCommandSequence,
+        }
+      } else if (data.type === 'media.playing' || data.type === 'media.paused' || data.type === 'media.stopped' || data.type === 'media.autoplay_blocked' || data.type === 'media.failed') {
+        const last = messages.value.slice().reverse().find((message) => message.media?.playback_id === data.playback_id)
+        if (!last?.media) return
+        const status = data.type.replace('media.', '') as MediaStatus
+        last.media.status = status
+        if (data.message) last.media.message = data.message
+        if (data.code) last.media.code = data.code
       } else if (data.type === 'done') {
         const last = messages.value[messages.value.length - 1]
         if (last?.streaming) last.streaming = false
@@ -478,6 +534,25 @@ export const useChatStore = defineStore('chat', () => {
     return hadActiveReply
   }
 
+  function sendMediaStatus(
+    playbackId: string,
+    status: 'playing' | 'paused' | 'stopped' | 'autoplay_blocked' | 'failed',
+    message?: string,
+  ) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return false
+    ws.send(JSON.stringify({ type: 'media.status', playback_id: playbackId, status, ...(message ? { message } : {}) }))
+    return true
+  }
+
+  function sendMediaCommand(playbackId: string, command: MediaCommand['command']) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      lastError.value = '音乐控制暂时断开了，连接恢复后再试。'
+      return false
+    }
+    ws.send(JSON.stringify({ type: 'media.command', playback_id: playbackId, command }))
+    return true
+  }
+
   function interruptForSpeech() {
     pendingVoiceMessages = []
     if (!activeReply && !isStreaming.value) return false
@@ -514,5 +589,8 @@ export const useChatStore = defineStore('chat', () => {
     interruptForSpeech,
     receiveProactiveMessages,
     subscribeReply,
+    lastMediaCommand,
+    sendMediaStatus,
+    sendMediaCommand,
   }
 })

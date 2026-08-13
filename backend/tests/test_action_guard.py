@@ -51,7 +51,8 @@ def test_media_claim_is_replaced_with_current_capability_boundary():
     reply, blocked = guard_action_reply("我已经开始播放了。", "media")
 
     assert blocked is True
-    assert "不能直接控制音乐软件" in reply
+    assert "本地音乐" in reply
+    assert "开始播放" not in reply
 
 
 def test_user_fact_is_not_treated_as_assistant_completion_claim():
@@ -66,3 +67,11 @@ def test_capability_rules_explicitly_forbid_fake_execution():
 
     assert "支持在用户明确要求时创建新的 .md 文件" in rules
     assert "没有系统返回的成功结果" in rules
+
+
+def test_capability_rules_describe_local_music_as_available():
+    rules = format_action_capability_rules()
+
+    assert "本地音乐库" in rules
+    # 音乐已接入，不应再被列进“仍不支持”清单
+    assert "音乐播放" not in rules

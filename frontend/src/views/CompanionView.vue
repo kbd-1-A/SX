@@ -6,18 +6,22 @@
  * 本视图是同一份状态的另一种渲染——聊天/陪伴两种模式随时互切。
  */
 import { computed, ref } from 'vue'
-import { NButton, NInput } from 'naive-ui'
+import { NButton, NInput, NPopover, NSelect } from 'naive-ui'
 import { useChatStore } from '../stores/chat'
 import { getOrbStyle, type OrbState } from '../lib/orbStyle'
 import { getMaskStyle } from '../lib/maskVrm'
 import { useVoiceConversation } from '../composables/useVoiceConversation'
+import { useAgentStateStore } from '../stores/agentState'
+import type { SelectOption } from 'naive-ui'
 import ParticleOrb from '../components/ParticleOrb.vue'
 
 const emit = defineEmits<{ (e: 'switch-to-chat'): void }>()
 
 const chat = useChatStore()
+const agent = useAgentStateStore()
 const draft = ref('')
 const voice = useVoiceConversation()
+const devicePickerOpen = ref(false)
 
 const orbStyle = computed(() =>
   getOrbStyle(chat.currentMask, chat.currentEmotion.emotion, chat.currentEmotion.intensity),
@@ -78,6 +82,40 @@ function send() {
   if (!text) return
   if (chat.send(text)) draft.value = ''
 }
+
+const audioInputOptions = computed<SelectOption[]>(() => [
+  { label: '系统默认麦克风', value: '' },
+  ...agent.audioInputs.map((device) => ({ label: device.label, value: device.deviceId })),
+])
+
+const selectedDeviceId = computed({
+  get: () => agent.selectedDeviceId,
+  set: (value: string) => agent.setSelectedDeviceId(value),
+})
+
+function openDevicePicker() {
+  // 兼容 nudgeDevicePicker 的手动打开路径：点击「麦克风错误」条时强制打开。
+  devicePickerOpen.value = true
+}
+
+// popover 用 trigger="click" 后由 naive-ui 自动处理外部点击关闭。
+// 仅在「由关闭→打开」的瞬间刷新一次设备列表；连续 toggle 时不重复刷新。
+let lastRefreshedAt = 0
+async function onDevicePickerToggle(show: boolean) {
+  if (show) {
+    const now = Date.now()
+    if (now - lastRefreshedAt > 1000) {
+      lastRefreshedAt = now
+      await agent.refreshAudioInputs()
+    }
+  }
+}
+
+// 当前设备没有信号时，引导用户切设备：先把提示折叠到一行避免遮挡，
+// 把 popover 自动打开一下，给出可操作入口。
+async function nudgeDevicePicker() {
+  await openDevicePicker()
+}
 </script>
 
 <template>
@@ -117,13 +155,46 @@ function send() {
       >
         <span class="mic-icon">{{ voice.capturing.value ? '■' : '🎙' }}</span>
       </button>
+      <n-popover
+        v-model:show="devicePickerOpen"
+        trigger="click"
+        placement="top"
+        :show-arrow="true"
+        :raw="false"
+        style="padding: 12px 14px"
+        @update:show="onDevicePickerToggle"
+      >
+        <template #trigger>
+          <button
+            class="device-button"
+            type="button"
+            title="切换麦克风"
+          >
+            <span class="device-icon">🎧</span>
+          </button>
+        </template>
+        <div class="device-picker">
+          <div class="device-picker-title">输入设备</div>
+          <n-select
+            v-model:value="selectedDeviceId"
+            :options="audioInputOptions"
+            size="small"
+            placeholder="选择麦克风"
+            style="min-width: 200px"
+          />
+          <p class="device-picker-hint">
+            切完设备后再次点击「🎙」重启采集。<br />
+            没有列表项？先点一次「🎙」让浏览器弹出麦克风权限。
+          </p>
+        </div>
+      </n-popover>
       <div class="input-column">
         <span
           v-if="voiceHint"
           class="voice-hint"
           :class="{ dismissible: voice.captureError.value }"
-          :title="voice.captureError.value ? '点击关闭提示' : ''"
-          @click="voice.captureError.value && (voice.captureError.value = '')"
+          :title="voice.captureError.value ? '点击切换麦克风' : ''"
+          @click="voice.captureError.value && nudgeDevicePicker()"
           >{{ voiceHint }}</span
         >
         <n-input
@@ -314,6 +385,43 @@ function send() {
   50% {
     box-shadow: 0 0 22px rgba(255, 184, 48, 0.55);
   }
+}
+.device-button {
+  flex-shrink: 0;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.07);
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 15px;
+  cursor: pointer;
+  backdrop-filter: blur(6px);
+  transition: all 0.25s ease;
+}
+.device-button:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+.device-icon {
+  display: inline-block;
+  line-height: 1;
+}
+.device-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 220px;
+}
+.device-picker-title {
+  font-size: 12px;
+  color: #6a7880;
+  letter-spacing: 0.04em;
+}
+.device-picker-hint {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.55;
+  color: #94a3a8;
 }
 .input {
   flex: 1;

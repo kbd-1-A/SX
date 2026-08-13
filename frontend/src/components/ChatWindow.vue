@@ -4,6 +4,7 @@ import { NAlert, NButton, NInput, NLayout, NLayoutHeader, NLayoutFooter, NTag } 
 import { useChatStore } from '../stores/chat'
 import { renderAssistantMarkdown } from '../utils/chatMarkdown'
 import RealtimeFoundationPanel from './RealtimeFoundationPanel.vue'
+import MusicPlayer from './MusicPlayer.vue'
 
 const chat = useChatStore()
 const input = ref('')
@@ -75,6 +76,10 @@ function sourceTypeLabel(sourceType: string) {
   if (sourceType === 'official') return '官方/一手'
   if (sourceType === 'organization') return '组织/研究'
   return '二手来源'
+}
+
+function currentMediaCommand(playbackId: string) {
+  return chat.lastMediaCommand?.playback_id === playbackId ? chat.lastMediaCommand : null
 }
 </script>
 
@@ -196,6 +201,13 @@ function sourceTypeLabel(sourceType: string) {
             </div>
             <div class="artifact-card__path">{{ m.artifactFailure.message }}</div>
           </div>
+          <MusicPlayer
+            v-if="m.media?.stream_url"
+            :media="m.media"
+            :command="currentMediaCommand(m.media.playback_id)"
+            @status="(status, message) => chat.sendMediaStatus(m.media!.playback_id, status, message)"
+            @command="(command) => chat.sendMediaCommand(m.media!.playback_id, command)"
+          />
         </div>
       </div>
     </div>
