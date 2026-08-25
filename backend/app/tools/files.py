@@ -1,4 +1,4 @@
-"""Phase 1 的 Markdown 文件创建工具。
+"""Phase 1 的文档文件创建工具（支持 .md 与 .txt）。
 
 模型不会获得本机路径或任意文件系统权限。调用方只能传递受控的目标枚举、
 文件名和内容；本模块负责路径解析、排重、原子写入与最终校验。
@@ -22,6 +22,7 @@ FileTarget = Literal["desktop", "output"]
 
 MAX_FILENAME_CHARS = 120
 MAX_DUPLICATE_SUFFIX_ATTEMPTS = 1_000
+_SUPPORTED_EXTENSIONS = frozenset({"md", "txt"})
 _WINDOWS_RESERVED_NAMES = {
     "CON",
     "PRN",
@@ -32,9 +33,12 @@ _WINDOWS_RESERVED_NAMES = {
 }
 _INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _CREATE_ACTION = re.compile(r"创建|新建|保存|导出|生成", re.IGNORECASE)
-_FILE_NOUN = re.compile(r"\.md\b|markdown|md\s*(?:文件|文档)?|文件|文档", re.IGNORECASE)
-_NAMED_MARKDOWN = re.compile(
-    r"(?P<filename>[\w\u3400-\u9fff()（） _-]{1,120}\.md)\b",
+_FILE_NOUN = re.compile(
+    r"\.(?:md|txt)\b|markdown|md\s*(?:文件|文档)?|txt\s*(?:文件)?|文件|文档",
+    re.IGNORECASE,
+)
+_NAMED_TEXT_FILE = re.compile(
+    r"(?P<filename>[\w\u3400-\u9fff()（） _-]{1,120}\.(?:md|txt))\b",
     re.IGNORECASE,
 )
 _OTHER_EXTENSION = re.compile(r"\.([A-Za-z]{1,8})(?=$|[\s'\"，。；、）】])")
@@ -112,14 +116,14 @@ def parse_file_creation_request(text: str) -> FileCreationRequest | None:
 
     unsupported_reason: str | None = None
     extension = _OTHER_EXTENSION.search(normalized)
-    if extension and extension.group(1).lower() != "md":
-        unsupported_reason = "第一版文件工具只支持创建 .md Markdown 文件。"
+    if extension and extension.group(1).lower() not in _SUPPORTED_EXTENSIONS:
+        unsupported_reason = "第一版文件工具只支持创建 .md 或 .txt 文件。"
     elif _UNSAFE_ABSOLUTE_PATH.search(normalized) and "kairos-output" not in lowered:
         unsupported_reason = "目前只能保存到 Windows 桌面或 E:\\Kairos-output，不能写入其他路径。"
     elif target == "output" and _UNSUPPORTED_DESTINATION.search(normalized):
         unsupported_reason = "目前只能保存到 Windows 桌面或 E:\\Kairos-output，其他目录需要后续授权。"
 
-    match = _NAMED_MARKDOWN.search(normalized)
+    match = _NAMED_TEXT_FILE.search(normalized)
     filename = _clean_extracted_filename(match.group("filename")) if match else None
     return FileCreationRequest(
         target=target,
@@ -144,7 +148,7 @@ def create_markdown_file(
     filename: str,
     content: str,
 ) -> MarkdownArtifact:
-    """在允许的根目录创建一个新的 UTF-8 Markdown 文件并验证结果。"""
+    """在允许的根目录创建一个新的 UTF-8 .md 或 .txt 文件并验证结果。"""
     safe_filename = validate_markdown_filename(filename)
     encoded_content = validate_markdown_content(content)
     resolved_target, root = resolve_destination_root(target)
@@ -192,10 +196,12 @@ def validate_markdown_filename(filename: str) -> str:
         raise MarkdownFileToolError("文件名不能包含路径或 Windows 非法字符。", "invalid_filename")
     if normalized.endswith((" ", ".")):
         raise MarkdownFileToolError("文件名不能以空格或句点结尾。", "invalid_filename")
-    if not normalized.lower().endswith(".md"):
-        raise MarkdownFileToolError("第一版文件工具只支持 .md 文件。", "unsupported_extension")
+    if Path(normalized).suffix.lower() not in {".md", ".txt"}:
+        raise MarkdownFileToolError(
+            "第一版文件工具只支持 .md 或 .txt 文件。", "unsupported_extension"
+        )
 
-    stem = normalized[:-3]
+    stem = Path(normalized).stem
     if not stem or stem.rstrip(". ").upper() in _WINDOWS_RESERVED_NAMES:
         raise MarkdownFileToolError("文件名不能使用 Windows 保留名称。", "invalid_filename")
     return normalized
@@ -293,8 +299,8 @@ def _get_windows_known_desktop_directory() -> Path | None:
 def _filename_with_suffix(filename: str, suffix_number: int) -> str:
     if suffix_number == 1:
         return filename
-    stem, suffix = filename[:-3], filename[-3:]
-    candidate = f"{stem} ({suffix_number}){suffix}"
+    path = Path(filename)
+    candidate = f"{path.stem} ({suffix_number}){path.suffix}"
     if len(candidate) > MAX_FILENAME_CHARS:
         raise MarkdownFileToolError("文件名加序号后过长。", "invalid_filename")
     return candidate
@@ -316,12 +322,13 @@ def verify_markdown_artifact(path: Path, *, target: FileTarget) -> MarkdownArtif
     except OSError as exc:
         raise MarkdownFileToolError("文件无法重新读取，无法确认创建成功。", "verify_failed") from exc
 
+    mime_type = "text/plain" if path.suffix.lower() == ".txt" else "text/markdown"
     return MarkdownArtifact(
         id=uuid4().hex,
         path=str(path),
         display_name=path.name,
         target=target,
-        mime_type="text/markdown",
+        mime_type=mime_type,
         size_bytes=size_bytes,
         sha256=digest.hexdigest(),
     )

@@ -29,6 +29,9 @@ interface FollowUp {
   due_at: string | null
   importance: number
   status: 'open' | 'done' | 'archived'
+  phase: 'active' | 'paused' | 'blocked'
+  blocked_reason?: { code: string; message: string } | null
+  stall_rounds?: number
 }
 
 interface CarePoint {
@@ -298,6 +301,23 @@ function dueLabel(item: FollowUp) {
   return item.due_at ? `时间：${item.due_at.slice(0, 16)}` : '等你方便时再继续'
 }
 
+const phaseNames: Record<string, string> = {
+  active: '进行中',
+  paused: '已暂停',
+  blocked: '已受阻',
+}
+
+async function setGoalPhase(item: FollowUp, action: 'pause' | 'resume' | 'unblock') {
+  actionError.value = ''
+  try {
+    const res = await fetch(`/api/companion/follow-ups/${item.id}/${action}`, { method: 'POST' })
+    if (!res.ok) throw new Error('goal_phase_failed')
+    await load()
+  } catch {
+    actionError.value = '这件事项的状态暂时没能更新。'
+  }
+}
+
 onMounted(async () => {
   notification.destroyAll()
   syncNotificationPermission()
@@ -426,8 +446,24 @@ watch(
               {{ importanceNames[item.importance] }}
             </n-tag>
             <span style="font-size: 11px; color: #999">{{ dueLabel(item) }}</span>
+            <n-tag
+              size="tiny"
+              :type="item.phase === 'blocked' ? 'error' : item.phase === 'paused' ? 'warning' : 'success'"
+              :bordered="false"
+            >
+              {{ phaseNames[item.phase] || '进行中' }}
+            </n-tag>
+            <n-button v-if="item.phase === 'active'" size="tiny" @click="setGoalPhase(item, 'pause')">暂停</n-button>
+            <n-button v-if="item.phase === 'paused'" size="tiny" @click="setGoalPhase(item, 'resume')">继续</n-button>
+            <n-button v-if="item.phase === 'blocked'" size="tiny" type="warning" @click="setGoalPhase(item, 'unblock')">重新跟进</n-button>
             <n-button size="tiny" @click="startEditing(item)">编辑</n-button>
             <n-button size="tiny" @click="completeFollowUp(item)">完成</n-button>
+          </div>
+          <div
+            v-if="item.phase === 'blocked' && item.blocked_reason?.message"
+            style="margin-top: 4px; font-size: 11px; color: #999"
+          >
+            {{ item.blocked_reason.message }}
           </div>
         </template>
       </div>

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { nextTick, ref, watch } from 'vue'
 import { NAlert, NButton, NInput, NLayout, NLayoutHeader, NLayoutFooter, NTag } from 'naive-ui'
-import { useChatStore } from '../stores/chat'
+import { useChatStore, type ChatMessage } from '../stores/chat'
 import { renderAssistantMarkdown } from '../utils/chatMarkdown'
 import RealtimeFoundationPanel from './RealtimeFoundationPanel.vue'
 import MusicPlayer from './MusicPlayer.vue'
@@ -81,6 +81,17 @@ function sourceTypeLabel(sourceType: string) {
 function currentMediaCommand(playbackId: string) {
   return chat.lastMediaCommand?.playback_id === playbackId ? chat.lastMediaCommand : null
 }
+
+const feedbackNotice = ref('')
+
+async function rateMessage(message: ChatMessage, rating: 'positive' | 'negative') {
+  feedbackNotice.value = ''
+  try {
+    await chat.sendFeedback(message.id, rating)
+  } catch {
+    feedbackNotice.value = '这条反馈暂时没保存上，稍后再试。'
+  }
+}
 </script>
 
 <template>
@@ -141,6 +152,27 @@ function currentMediaCommand(playbackId: string) {
               :class="{ 'message-markdown--streaming': m.streaming }"
               v-html="renderAssistantMarkdown(m.content)"
             />
+          </div>
+          <div
+            v-if="m.role === 'assistant' && m.id > 0 && !m.streaming && !m.proactiveEventId"
+            class="feedback-bar"
+          >
+            <n-button
+              size="tiny"
+              quaternary
+              :type="m.feedback?.rating === 'positive' ? 'success' : 'default'"
+              @click="rateMessage(m, 'positive')"
+            >
+              👍 有帮助
+            </n-button>
+            <n-button
+              size="tiny"
+              quaternary
+              :type="m.feedback?.rating === 'negative' ? 'warning' : 'default'"
+              @click="rateMessage(m, 'negative')"
+            >
+              👎 不太对
+            </n-button>
           </div>
           <div v-if="m.research" class="research-card">
             <div class="research-card__header">
@@ -217,6 +249,9 @@ function currentMediaCommand(playbackId: string) {
         <n-alert v-if="chat.lastError" type="warning" :show-icon="false">
           {{ chat.lastError }}
         </n-alert>
+        <div v-if="feedbackNotice" style="font-size: 12px; color: #d03050">
+          {{ feedbackNotice }}
+        </div>
         <div style="display: flex; gap: 12px">
         <n-input
           v-model:value="input"
@@ -331,6 +366,13 @@ function currentMediaCommand(playbackId: string) {
 
 .message-markdown :deep(a) {
   color: #1672c4;
+}
+
+.feedback-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
 }
 
 .artifact-card {

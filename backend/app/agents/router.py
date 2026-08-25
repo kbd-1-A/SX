@@ -33,8 +33,10 @@ from app.config import (
 )
 from app.memory.anchors import format_recalled_anchors
 from app.memory.behavior import format_behavior_profile
+from app.memory.observations import format_rhythm_profile
 from app.memory.self import format_self_memory
 from app.memory.store import get_messages
+from app.services.weather import WeatherResult, format_weather_context
 from app.tools.research import ResearchResult, format_research_context
 
 # 对话历史注入上限（token，近似估算）。从最新往前累计，超出即丢最旧。
@@ -147,6 +149,7 @@ def build_messages(
     document_draft: bool = False,
     research_result: ResearchResult | None = None,
     research_failed: bool = False,
+    weather_result: WeatherResult | None = None,
 ) -> list[dict]:
     emotion_state = emotion_state or detect_emotion_state(user_msg)
     system = "\n\n".join(
@@ -159,6 +162,7 @@ def build_messages(
             format_action_capability_rules(
                 file_creation_available=document_draft,
                 web_research_available=research_result is not None,
+                weather_available=weather_result is not None,
             ),
             format_document_draft_rules(
                 research_available=research_result is not None,
@@ -166,11 +170,18 @@ def build_messages(
             ) if document_draft else "",
             "# 关于我们\n" + format_self_memory(),
             format_behavior_profile(),
+            format_rhythm_profile(),
             "# 相关记忆\n" + format_recalled_anchors(user_msg),
         ]
     )
     messages: list[dict] = [{"role": "system", "content": system}]
     history = _normalize_history(get_messages(session_id, limit=200))
+    if document_draft:
+        history = [
+            message
+            for message in history
+            if not _is_action_result_message(message)
+        ]
     history = truncate_history(history, MAX_HISTORY_TOKENS)
     history = _drop_orphaned_assistant_prefix(history)
     messages.extend(_model_history(history))
@@ -184,6 +195,8 @@ def build_messages(
         messages.append({"role": "user", "content": user_msg})
     if research_result is not None:
         messages.append({"role": "user", "content": format_research_context(research_result)})
+    if weather_result is not None:
+        messages.append({"role": "user", "content": format_weather_context(weather_result)})
     return messages
 
 
@@ -193,7 +206,9 @@ def format_document_draft_rules(
     """限制模型只输出可由服务端写入的 Markdown 草稿。"""
     rules = [
         "# Markdown 文档草稿任务",
-        "- 只输出 Markdown 正文，不要寒暄、解释写入步骤或报告文件已创建。",
+        "- 只输出 Markdown 正文，不要寒暄，也不要解释写入步骤或报告文件已创建。",
+        "- 禁止“我准备了一份…草稿”“好的，这是整理”“以下是内容”等元描述开场白，直接输出报告正文。",
+        "- 严格按用户当前这条请求的主题写作；历史对话里的其他主题（如之前的行情报告）不得沿用或混入本文档。",
         "- 第一行必须是一个 `# ` 开头的标题；用清晰的小节组织内容。",
         "- 用户没有要求保存的历史对话、记忆、环境变量、密钥或本地文件内容绝不能写入文档。",
     ]
@@ -201,6 +216,9 @@ def format_document_draft_rules(
         return "\n".join(
             [
                 *rules,
+                "- 这是一份要交付给用户的完整研究报告，篇幅要充实（600 字以上），不能只写一段话或只罗列来源。",
+                "- 报告按顺序包含这些章节：核心结论、市场规模与增速、主要细分赛道、主要玩家、风险与挑战、未来趋势、给读者的建议；某方面资料不足的章节也要写，并明确标注待核实。",
+                "- 每章都要把附带资料里的具体事实转化为分析，用 [S#] 行内引用；不要整段复制来源原文。",
                 "- 对时效事实、数字和结论使用附带资料中的 [S#] 行内引用；没有来源支撑时明确标注不确定性。",
                 "- 只引用附带的服务端来源，不能编造 URL、检索日期、数字或 [S#] 编号。",
                 "- 版本号、市场数字和‘最新’结论优先使用标记为官方/一手的来源；仅有二手来源时必须明确写成未独立核实。",
@@ -243,6 +261,22 @@ def _normalize_history(history: list[dict]) -> list[dict]:
     return normalized
 
 
+_ACTION_RESULT_PREFIXES = ("已创建", "文档文件没有创建成功", "已读取", "联网检索未完成")
+
+
+def _is_action_result_message(message: dict) -> bool:
+    """行动结果消息（文件/研究状态文本）不作为文档草稿的模仿对象。
+
+    模型曾把历史里的“已创建 Markdown 文件：…SHA-256…”成功提示当成草稿输出，
+    导致写入文件的内容是编造的创建提示而不是分析正文。生成文档草稿时
+    跳过这类服务端状态消息，只保留真实对话。
+    """
+    if message.get("role") != "assistant":
+        return False
+    content = message.get("raw_content") or message.get("content") or ""
+    return content.startswith(_ACTION_RESULT_PREFIXES)
+
+
 def _model_history(history: list[dict]) -> list[dict]:
     return [
         {"role": message["role"], "content": message["content"]}
@@ -267,6 +301,7 @@ async def stream_reply(
     document_draft: bool = False,
     research_result: ResearchResult | None = None,
     research_failed: bool = False,
+    weather_result: WeatherResult | None = None,
 ):
     """异步生成回复文本，逐块 yield。"""
     if not DEEPSEEK_API_KEY:
@@ -285,6 +320,7 @@ async def stream_reply(
                 document_draft=document_draft,
                 research_result=research_result,
                 research_failed=research_failed,
+                weather_result=weather_result,
             ),
             stream=True,
         )

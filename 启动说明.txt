@@ -1,0 +1,34 @@
+
+========================================
+  时序项目启动指南
+========================================
+
+【问题说明】
+当前系统PowerShell执行策略被设置为 Restricted，
+导致无法通过自动化工具执行任何命令。
+
+【解决方案 - 请按以下步骤手动操作】
+
+步骤1：修复PowerShell执行策略（只需执行一次）
+  方法A：双击运行 fix_powershell_policy.reg 文件，点击"是"确认导入注册表
+  方法B：以管理员身份打开 PowerShell，执行以下命令：
+         Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned -Force
+
+步骤2：启动后端服务
+  打开命令行(CMD)或PowerShell，执行：
+    cd e:时序ackend
+    uvicorn app.main:app --port 8000
+
+步骤3：启动前端服务（另开一个命令行窗口）
+  打开新的命令行(CMD)或PowerShell，执行：
+    cd e:时序rontend
+    npm run dev
+
+【快捷方式】
+也可以直接双击以下两个文件：
+  - start-backend.bat  (启动后端)
+  - start-frontend.bat (启动前端)
+
+【验证服务】
+- 后端服务: 浏览器访问 http://localhost:8000/docs
+- 前端服务: 浏览器访问 http://localhost:5173 (具体端口看npm输出)

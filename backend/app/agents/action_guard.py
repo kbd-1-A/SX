@@ -9,13 +9,13 @@ from __future__ import annotations
 import re
 from typing import Literal
 
-ActionKind = Literal["file", "media", "external"]
+ActionKind = Literal["file", "media", "weather", "external"]
 
 _FILE_REQUEST = re.compile(
     r"(?:帮(?:我|忙)|请|麻烦|能(?:不)?能|可以|我要|我想|替我)?"
     r".{0,24}(?:创建|新建|保存|写入|导出|生成).{0,24}"
-    r"(?:md|markdown|文档|文件|桌面|目录|文件夹)"
-    r"|(?:写|整理).{0,24}(?:md|markdown|文档|文件)"
+    r"(?:md|markdown|txt|文档|文件|桌面|目录|文件夹)"
+    r"|(?:写|整理).{0,24}(?:md|markdown|txt|文档|文件)"
     r"|放在.{0,16}(?:桌面|目录|文件夹)"
     r"|(?:桌面|目录|文件夹).{0,16}(?:就行|可以|保存|创建)",
     re.IGNORECASE,
@@ -23,6 +23,11 @@ _FILE_REQUEST = re.compile(
 _MEDIA_REQUEST = re.compile(
     r"(?:播放|放).{0,16}(?:音乐|歌|歌曲|歌单)"
     r"|(?:来|推荐).{0,12}(?:一首|点).{0,8}(?:音乐|歌|歌曲|歌单)",
+    re.IGNORECASE,
+)
+_WEATHER_REQUEST = re.compile(
+    r"天气|下雨|下雪|气温|温度|多少度|冷不冷|热不热|有没有雨|雨大不大|"
+    r"天气预报|weather",
     re.IGNORECASE,
 )
 _EXTERNAL_REQUEST = re.compile(
@@ -59,6 +64,10 @@ _SAFE_FALLBACKS: dict[ActionKind, str] = {
         "我播放音乐需要先由你授权本地音乐目录，而且实际播放由服务端完成，我不能替它声称已经在播放。"
         "你想听什么可以直接说，我帮你从本地音乐库里找。"
     ),
+    "weather": (
+        "我目前还没有接入实时天气数据，所以不能编造温度或降水情况。"
+        "你可以告诉我城市，等天气功能接入后我第一时间帮你查。"
+    ),
     "external": (
         "我目前还不能直接操作外部软件、发送内容或修改设备上的资料，所以不能把这件事说成已经完成。"
         "我可以先帮你整理好内容和下一步。"
@@ -75,26 +84,37 @@ def detect_action_request(text: str) -> ActionKind | None:
         return "media"
     if _FILE_REQUEST.search(normalized):
         return "file"
+    if _WEATHER_REQUEST.search(normalized):
+        return "weather"
     if _EXTERNAL_REQUEST.search(normalized):
         return "external"
     return None
 
 
 def format_action_capability_rules(
-    *, file_creation_available: bool = False, web_research_available: bool = False
+    *,
+    file_creation_available: bool = False,
+    web_research_available: bool = False,
+    weather_available: bool = False,
 ) -> str:
     """提供给模型的当前能力边界。
 
     只有文件创建编排已经决定执行时，模型才会收到 Markdown 草稿任务；模型
     本身仍不能声称写入完成，最终结果只能由服务端工具返回。
     """
+    weather_rule = (
+        "- 服务端已为本轮提供实时天气数据；只能依据天气数据回答温度、降水与风力，不能编造。"
+        if weather_available
+        else "- 当前没有实时天气数据，不能编造温度、降水或预报。"
+    )
     if file_creation_available:
         rules = [
             "# 行动能力与执行事实",
-            "- 本轮正在准备一个 Markdown 文档草稿；服务端随后最多只能在 Windows 桌面或 E:\\Kairos-output 创建新的 .md 文件。",
+            "- 本轮正在准备一个 Markdown 文档草稿；服务端随后最多只能在 Windows 桌面或 E:\\Kairos-output 创建新的 .md 或 .txt 文件。",
             "- 你只负责生成文档内容，不能选择任意路径、覆盖文件、删除文件或声称文件已经创建。",
             "- 文件是否创建成功、最终文件名和保存位置只能以服务端返回的工具结果为准。",
             "- 当前仍没有外部软件控制、发送或购买工具。",
+            weather_rule,
             "- 不要用“写好了”“弄好了”“文件在桌面”“正在播放”等话术模拟执行结果。",
         ]
         if web_research_available:
@@ -105,9 +125,10 @@ def format_action_capability_rules(
     return "\n".join(
         [
             "# 行动能力与执行事实",
-            "- 当前支持在用户明确要求时创建新的 .md 文件，位置仅限 Windows 桌面或 E:\\Kairos-output；默认不覆盖同名文件。",
+            "- 当前支持在用户明确要求时创建新的 .md 或 .txt 文件，位置仅限 Windows 桌面或 E:\\Kairos-output；默认不覆盖同名文件。",
             "- 当前支持为研究型 Markdown 请求检索公开网页并附上真实来源；普通聊天不会自动联网。",
             "- 当前支持在用户明确点歌时播放本地音乐库中的歌曲；音乐由服务端本地音乐库实际播放，你只识别点歌意图，不直接播放、也不声称已经在播放。",
+            weather_rule,
             "- 当前仍不支持文件修改、覆盖、删除、移动、外部软件控制、发送或购买。",
             "- 没有系统返回的成功结果时，绝不能说文件已创建、内容已保存、歌曲已播放、软件已打开、消息已发送或其他外部动作已完成。",
             "- 只有本轮收到真实文件、研究或播放结果时才能报告对应动作成功；其他能力按当前边界如实说明。",

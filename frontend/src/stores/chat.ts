@@ -1,6 +1,12 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 
+export interface MessageFeedback {
+  rating: 'positive' | 'negative'
+  note?: string
+  version: number
+}
+
 export interface ChatMessage {
   id: number
   role: 'user' | 'assistant'
@@ -11,6 +17,7 @@ export interface ChatMessage {
   artifactFailure?: ArtifactFailure
   research?: ResearchState
   media?: ChatMedia
+  feedback?: MessageFeedback
 }
 
 export type MediaStatus = 'loading' | 'ready' | 'playing' | 'paused' | 'stopped' | 'autoplay_blocked' | 'failed'
@@ -39,7 +46,7 @@ export interface ChatArtifact {
   path: string
   display_name: string
   target: 'desktop' | 'output'
-  mime_type: 'text/markdown'
+  mime_type: 'text/markdown' | 'text/plain'
   size_bytes: number
   sha256: string
 }
@@ -360,6 +367,9 @@ export const useChatStore = defineStore('chat', () => {
       } else if (data.type === 'done') {
         const last = messages.value[messages.value.length - 1]
         if (last?.streaming) last.streaming = false
+        if (last?.role === 'assistant' && data.assistant_id != null) {
+          last.id = data.assistant_id
+        }
         flushProactiveMessages()
         if (data.mask) currentMask.value = data.mask
         if (data.reply_mode) currentReplyMode.value = data.reply_mode
@@ -439,6 +449,51 @@ export const useChatStore = defineStore('chat', () => {
     } catch {
       lastError.value = '历史消息暂时没加载出来，重连后会再试。'
     }
+    void loadFeedback()
+  }
+
+  async function loadFeedback() {
+    try {
+      const res = await fetch('/api/feedback?limit=200')
+      if (!res.ok) return
+      const list = await res.json()
+      const byMessage = new Map<number, MessageFeedback>(
+        list.map((f: any) => [f.message_id, f]),
+      )
+      for (const message of messages.value) {
+        const feedback = byMessage.get(message.id)
+        if (feedback) {
+          message.feedback = {
+            rating: feedback.rating,
+            note: feedback.note,
+            version: feedback.version,
+          }
+        }
+      }
+    } catch {
+      // 反馈加载失败不影响聊天。
+    }
+  }
+
+  async function sendFeedback(messageId: number, rating: 'positive' | 'negative') {
+    const message = messages.value.find((m) => m.id === messageId)
+    const res = await fetch(`/api/messages/${messageId}/feedback`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ rating, if_version: message?.feedback?.version }),
+    })
+    const data = await res.json()
+    if (res.status === 409) {
+      if (message) {
+        message.feedback = { rating: data.rating, note: data.note, version: data.version }
+      }
+      throw new Error('feedback_conflict')
+    }
+    if (!res.ok) throw new Error('feedback_failed')
+    if (message) {
+      message.feedback = { rating: data.rating, note: data.note, version: data.version }
+    }
+    return message?.feedback
   }
 
   async function switchTask(sessionId: number) {
@@ -581,6 +636,8 @@ export const useChatStore = defineStore('chat', () => {
     init,
     loadTasks,
     loadHistory,
+    loadFeedback,
+    sendFeedback,
     switchTask,
     newTask,
     send,

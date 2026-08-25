@@ -11,12 +11,15 @@ from app.tools.research import (
     ResearchError,
     ResearchSource,
     SearchResult,
+    So360SearchProvider,
     build_search_query,
     build_research_framework,
     canonicalize_url,
     classify_source_type,
     finalize_research_markdown,
+    is_relevant_search_result,
     parse_research_request,
+    refine_research_query,
     research_public_sources,
 )
 
@@ -51,13 +54,13 @@ def test_parse_research_request_removes_file_action_clause():
     )
 
     assert request is not None
-    assert request.query == "现在的 agent 行业行情"
+    assert request.query == "agent 行业行情"
 
     named = parse_research_request(
         "了解 OpenAI Agents SDK 现在的情况，创建 阶段2验收.md 保存到输出目录"
     )
     assert named is not None
-    assert named.query == "OpenAI Agents SDK 现在的情况"
+    assert named.query == "OpenAI Agents SDK"
 
 
 def test_parse_research_request_does_not_mark_plain_document_as_research():
@@ -199,3 +202,117 @@ def test_research_framework_clearly_disclaims_realtime_claims():
     assert "联网检索未完成" in framework
     assert "不包含实时行情" in framework
     assert "待核实问题" in framework
+
+
+def test_parse_research_request_extracts_core_topic_from_casual_phrasing():
+    request = parse_research_request("分析一下ai销售行情 创建txt文件放到桌面上")
+
+    assert request is not None
+    assert request.query == "ai销售行情"
+
+    casual = parse_research_request("帮我查查现在AI行业怎么样，创建文档放到桌面")
+    assert casual is not None
+    assert casual.query == "AI行业"
+
+
+def test_parse_research_request_detects_analyze_recent_topic():
+    # 用户说"分析最近X"应触发研究，主题应提炼为 X 而不是沿用历史话题
+    request = parse_research_request("帮我分析一下 最近的ai模型，创建 txt 文件放到桌面")
+
+    assert request is not None
+    assert request.query == "ai模型"
+    assert "销售" not in request.query
+
+
+def test_parse_research_request_recent_phrasing_variants():
+    variants = [
+        ("帮我分析一下最近 AI 模型，创建 txt 文件放到桌面", "AI 模型"),
+        ("分析一下近期的数字人技术，创建 md 放桌面", "数字人技术"),
+        ("帮我分析一下 ai 模型，创建 txt 文件放到桌面", "ai 模型"),
+    ]
+    for text, expected in variants:
+        request = parse_research_request(text)
+        assert request is not None, text
+        assert request.query == expected, (text, request.query)
+
+
+def test_search_query_strips_filler_words_and_keeps_core_topic():
+    now = datetime(2026, 8, 10, tzinfo=timezone.utc)
+
+    assert build_search_query("ai销售行情", now) == "ai销售行情 2026"
+    assert build_search_query("分析一下ai销售行情", now) == "ai销售行情 2026"
+
+
+def test_relevance_uses_bigram_windows_and_ignores_filler():
+    assert is_relevant_search_result(
+        SearchResult("AI销售 市场规模 报告", "https://example.com/a", "2026 年 AI 销售数据"),
+        "分析一下ai销售行情",
+    )
+    # 只有噪音词“分析”命中 → 不相关
+    assert not is_relevant_search_result(
+        SearchResult("分析 这个词是什么意思", "https://example.com/b", "词典解释"),
+        "ai销售行情",
+    )
+
+
+def test_so360_parser_extracts_real_url_from_data_mdurl(monkeypatch):
+    page = """
+    <li class="res-list">
+      <h3 class="res-title">
+        <a href="https://www.so.com/link?m=abc123" data-mdurl="https://www.toutiao.com/article/7599873726498325032/"
+           rel="noopener">2026年AI营销趋势预测</a>
+      </h3>
+      <p class="res-desc">某行业报告摘要，2026 年 AI 营销。</p>
+    </li>
+    <li class="res-list">
+      <h3 class="res-title"><a href="https://www.so.com/link?m=def456" data-mdurl="https://www.163.com/dy/article/x.html">网易 AI 分析</a></h3>
+      <p class="res-desc">正文摘要。</p>
+    </li>
+    """
+    monkeypatch.setattr(research_mod, "_fetch_html", lambda *args, **kwargs: page)
+
+    results = So360SearchProvider(endpoint="https://www.so.com/s").search("AI 营销 2026", 5)
+
+    assert len(results) == 2
+    assert results[0].title == "2026年AI营销趋势预测"
+    assert results[0].url == "https://www.toutiao.com/article/7599873726498325032/"
+    assert "AI 营销" in results[0].snippet
+    assert results[1].url == "https://www.163.com/dy/article/x.html"
+
+
+def test_refine_research_query_strips_verbs_and_file_words():
+    assert refine_research_query("分析一下ai销售行情") == "ai销售行情"
+    assert refine_research_query("帮我查查现在AI行业怎么样") == "AI行业"
+    assert refine_research_query("OpenAI Agents SDK 现在的情况") == "OpenAI Agents SDK"
+
+
+def test_research_retries_with_refined_query_when_first_search_irrelevant(monkeypatch):
+    noise = SearchResult("分析 词典解释", "https://example.com/dict", "词典")
+    relevant = SearchResult("2026 AI 销售 市场 报告", "https://example.com/report", "AI 销售 数据")
+    pages = {"https://example.com/report": "官方公开正文 " * 80}
+
+    class RetryProvider:
+        def __init__(self):
+            self.queries = []
+            self.results = [[noise], [relevant]]
+            self.index = 0
+
+        def search(self, query, limit):
+            self.queries.append(query)
+            out = self.results[min(self.index, 1)]
+            self.index += 1
+            return out
+
+        def read(self, url):
+            return pages[url]
+
+    provider = RetryProvider()
+    monkeypatch.setattr(research_mod, "RESEARCH_MIN_SOURCES", 1)
+
+    result = asyncio.run(
+        research_public_sources("ai销售行情", provider=provider)
+    )
+
+    assert len(provider.queries) == 2
+    assert provider.queries[0] != provider.queries[1]
+    assert [s.citation_id for s in result.sources] == [1]

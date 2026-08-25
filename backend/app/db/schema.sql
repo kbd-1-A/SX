@@ -74,3 +74,66 @@ CREATE TABLE IF NOT EXISTS companion_events (
 
 CREATE INDEX IF NOT EXISTS idx_companion_events_created
 ON companion_events(created_at DESC);
+
+-- 消息级反馈：对 assistant 回复的赞/踩 sidecar（自主学习，乐观并发）
+CREATE TABLE IF NOT EXISTS message_feedback (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    message_id INTEGER NOT NULL UNIQUE REFERENCES messages(id),
+    rating TEXT NOT NULL,                -- positive / negative
+    note TEXT DEFAULT '',
+    version INTEGER NOT NULL DEFAULT 1,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_message_feedback_updated
+ON message_feedback(updated_at DESC);
+
+-- 目标事件溯源：follow_ups 生命周期只追加日志
+CREATE TABLE IF NOT EXISTS goal_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    follow_up_id INTEGER NOT NULL REFERENCES follow_ups(id),
+    seq INTEGER NOT NULL,
+    event_type TEXT NOT NULL,            -- created/edited/paused/resumed/blocked/unblocked/completed/reopened/archived
+    payload TEXT NOT NULL DEFAULT '{}',  -- JSON 快照
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(follow_up_id, seq)
+);
+
+CREATE INDEX IF NOT EXISTS idx_goal_events_follow_up
+ON goal_events(follow_up_id, seq);
+
+-- P1 观察层：每轮对话元数据（纯确定性，零 LLM）
+CREATE TABLE IF NOT EXISTS turn_observations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id INTEGER REFERENCES sessions(id),
+    user_message_id INTEGER REFERENCES messages(id),
+    assistant_message_id INTEGER REFERENCES messages(id),
+    mask TEXT DEFAULT '',
+    reply_mode TEXT DEFAULT '',
+    emotion TEXT DEFAULT '',
+    user_chars INTEGER DEFAULT 0,
+    reply_chars INTEGER DEFAULT 0,
+    reply_seconds REAL DEFAULT 0,
+    hour_of_day INTEGER,                -- 本地时间小时 0-23
+    weekday INTEGER,                    -- 本地时间星期 0=周一
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_turn_observations_created
+ON turn_observations(created_at);
+
+-- P2 隐式反馈：系统从行为痕迹推断的信号（append-only）
+CREATE TABLE IF NOT EXISTS implicit_feedback (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id INTEGER,
+    assistant_message_id INTEGER,       -- 完成的回复可引用；中断的回复为 NULL
+    signal TEXT NOT NULL,               -- continued_after / interrupted_long
+    polarity TEXT NOT NULL,             -- positive / negative
+    content TEXT DEFAULT '',
+    applied INTEGER NOT NULL DEFAULT 0, -- 是否已被行为学习消费
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_implicit_feedback_unapplied
+ON implicit_feedback(applied, signal);

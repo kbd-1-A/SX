@@ -366,7 +366,14 @@ def create_follow_up(
     conn.commit()
     row = conn.execute("SELECT * FROM follow_ups WHERE id = ?", (cur.lastrowid,)).fetchone()
     conn.close()
-    return _follow_up_dict(row) if row else None
+    if row:
+        record_goal_event(
+            cur.lastrowid,
+            "created",
+            {"title": title, "status": "open", "phase": "active"},
+        )
+        return _follow_up_dict(row)
+    return None
 
 
 def create_follow_ups_from_text(
@@ -436,19 +443,47 @@ def update_follow_up(
             raise ValueError("unsupported follow-up status")
         updates.append("status = ?")
         values.append(status)
+        # 目标生命周期：done 复位阻塞/暂停并记录完成；open 清除完成时间
+        if status == "done":
+            updates.append("phase = 'active'")
+            updates.append("stall_rounds = 0")
+            updates.append("completed_at = CURRENT_TIMESTAMP")
+        elif status == "open":
+            updates.append("completed_at = NULL")
     if not updates:
         return get_follow_up(follow_up_id)
     updates.append("updated_at = CURRENT_TIMESTAMP")
     values.append(follow_up_id)
     conn = _conn()
+    old = conn.execute(
+        "SELECT status FROM follow_ups WHERE id = ?", (follow_up_id,)
+    ).fetchone()
+    old_status = old["status"] if old else None
     cur = conn.execute(
         f"UPDATE follow_ups SET {', '.join(updates)} WHERE id = ?",
         values,
     )
     conn.commit()
-    row = conn.execute("SELECT * FROM follow_ups WHERE id = ?", (follow_up_id,)).fetchone()
+    row = conn.execute(
+        "SELECT * FROM follow_ups WHERE id = ?", (follow_up_id,)
+    ).fetchone()
     conn.close()
-    return _follow_up_dict(row) if cur.rowcount and row else None
+
+    if not (cur.rowcount and row):
+        return None
+    status_changed = (
+        status is not None and old_status is not None and status != old_status
+    )
+    if status_changed and status == "done":
+        event_type = "completed"
+    elif status_changed and status == "open":
+        event_type = "reopened"
+    elif status_changed and status == "archived":
+        event_type = "archived"
+    else:
+        event_type = "edited"
+    record_goal_event(follow_up_id, event_type, _goal_snapshot(row))
+    return _follow_up_dict(row)
 
 
 def get_follow_up(follow_up_id: int) -> dict[str, Any] | None:
@@ -588,6 +623,8 @@ def evaluate_time_engine(now: datetime | None = None) -> list[dict[str, Any]]:
 
     # 重要截止提醒不受安静模式限制，避免错过真正紧急的事。
     for follow_up in list_follow_ups(limit=50, status="open"):
+        if follow_up.get("phase") != "active":
+            continue
         due_event = _due_event_for(follow_up, local_now)
         if not due_event:
             continue
@@ -603,6 +640,8 @@ def evaluate_time_engine(now: datetime | None = None) -> list[dict[str, Any]]:
         )
         if event:
             created.append(event)
+            if kind in STALL_EVENT_KINDS:
+                mark_goal_stalled(follow_up["id"])
 
     general_remaining = GENERAL_DAILY_LIMITS[frequency] - _general_events_today(local_now)
     if frequency == "quiet" or recently_active or general_remaining <= 0:
@@ -633,6 +672,8 @@ def evaluate_time_engine(now: datetime | None = None) -> list[dict[str, Any]]:
         return created
 
     for follow_up in list_follow_ups(limit=20, status="open"):
+        if follow_up.get("phase") != "active":
+            continue
         if follow_up["due_at"] or follow_up["last_cared_at"]:
             continue
         created_at = _parse_db_timestamp(follow_up["created_at"])
@@ -647,6 +688,7 @@ def evaluate_time_engine(now: datetime | None = None) -> list[dict[str, Any]]:
         )
         if event:
             created.append(event)
+            mark_goal_stalled(follow_up["id"])
             break
     return created
 
@@ -676,6 +718,11 @@ def get_companion_overview(
 
 
 def _follow_up_dict(row: sqlite3.Row) -> dict[str, Any]:
+    blocked_reason = row["blocked_reason"]
+    try:
+        blocked = json.loads(blocked_reason) if blocked_reason else None
+    except (json.JSONDecodeError, TypeError):
+        blocked = None
     return {
         "id": row["id"],
         "title": row["title"],
@@ -683,8 +730,12 @@ def _follow_up_dict(row: sqlite3.Row) -> dict[str, Any]:
         "due_at": row["due_at"],
         "importance": row["importance"],
         "status": row["status"],
+        "phase": row["phase"],
+        "blocked_reason": blocked,
+        "stall_rounds": row["stall_rounds"],
         "source_message_id": row["source_message_id"],
         "last_cared_at": row["last_cared_at"],
+        "completed_at": row["completed_at"],
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }
@@ -700,3 +751,236 @@ def _event_dict(row: sqlite3.Row) -> dict[str, Any]:
         "created_at": row["created_at"],
         "read_at": row["read_at"],
     }
+
+
+# ---------------------------------------------------------------------------
+# 目标生命周期（自主学习）：follow_ups 升级为目标系统
+# ---------------------------------------------------------------------------
+
+GOAL_PHASES = {"active", "paused", "blocked"}
+GOAL_EVENT_TYPES = {
+    "created",
+    "edited",
+    "paused",
+    "resumed",
+    "blocked",
+    "unblocked",
+    "completed",
+    "reopened",
+    "archived",
+}
+# 同一阻塞条件（目标被反复提醒却未推进）连续达到该轮数才自动 blocked
+GOAL_BLOCK_AFTER_STALL_ROUNDS = 3
+STALL_EVENT_KINDS = {"overdue", "open_loop"}
+
+
+def _goal_snapshot(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "title": row["title"],
+        "status": row["status"],
+        "phase": row["phase"],
+        "importance": row["importance"],
+        "due_at": row["due_at"],
+    }
+
+
+def _append_goal_event(
+    conn: sqlite3.Connection,
+    follow_up_id: int,
+    event_type: str,
+    payload: dict[str, Any] | None = None,
+) -> None:
+    """向只追加的目标事件日志写一条事件；seq 单调递增、幂等。"""
+    row = conn.execute(
+        "SELECT COALESCE(MAX(seq), 0) AS seq FROM goal_events WHERE follow_up_id = ?",
+        (follow_up_id,),
+    ).fetchone()
+    seq = int(row["seq"]) + 1
+    conn.execute(
+        "INSERT OR IGNORE INTO goal_events (follow_up_id, seq, event_type, payload) "
+        "VALUES (?, ?, ?, ?)",
+        (follow_up_id, seq, event_type, json.dumps(payload or {}, ensure_ascii=False)),
+    )
+
+
+def record_goal_event(
+    follow_up_id: int, event_type: str, payload: dict[str, Any] | None = None
+) -> None:
+    """独立连接写入目标事件；供 create/update/phase 变更后调用。"""
+    if event_type not in GOAL_EVENT_TYPES:
+        raise ValueError(f"unsupported goal event type: {event_type}")
+    conn = _conn()
+    _append_goal_event(conn, follow_up_id, event_type, payload)
+    conn.commit()
+    conn.close()
+
+
+def list_goal_events(follow_up_id: int, limit: int = 50) -> list[dict[str, Any]]:
+    conn = _conn()
+    rows = conn.execute(
+        "SELECT id, follow_up_id, seq, event_type, payload, created_at "
+        "FROM goal_events WHERE follow_up_id = ? ORDER BY seq DESC LIMIT ?",
+        (follow_up_id, max(1, min(limit, 500))),
+    ).fetchall()
+    conn.close()
+    events: list[dict[str, Any]] = []
+    for row in rows:
+        try:
+            payload = json.loads(row["payload"] or "{}")
+        except json.JSONDecodeError:
+            payload = {}
+        events.append(
+            {
+                "id": row["id"],
+                "follow_up_id": row["follow_up_id"],
+                "seq": row["seq"],
+                "event_type": row["event_type"],
+                "payload": payload,
+                "created_at": row["created_at"],
+            }
+        )
+    return events
+
+
+def _phase_event(
+    follow_up_id: int, phase: str, event_type: str
+) -> dict[str, Any] | None:
+    conn = _conn()
+    row = conn.execute(
+        "SELECT * FROM follow_ups WHERE id = ?", (follow_up_id,)
+    ).fetchone()
+    if not row or row["status"] == "done":
+        conn.close()
+        return None
+    conn.execute(
+        "UPDATE follow_ups SET phase = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        (phase, follow_up_id),
+    )
+    conn.commit()
+    row = conn.execute(
+        "SELECT * FROM follow_ups WHERE id = ?", (follow_up_id,)
+    ).fetchone()
+    conn.close()
+    if row:
+        record_goal_event(follow_up_id, event_type, {"phase": phase})
+    return _follow_up_dict(row) if row else None
+
+
+def _reactivate_follow_up(
+    follow_up_id: int, event_type: str
+) -> dict[str, Any] | None:
+    conn = _conn()
+    row = conn.execute(
+        "SELECT * FROM follow_ups WHERE id = ?", (follow_up_id,)
+    ).fetchone()
+    if not row or row["status"] == "done":
+        conn.close()
+        return None
+    conn.execute(
+        "UPDATE follow_ups SET phase = 'active', stall_rounds = 0, "
+        "blocked_reason = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        (follow_up_id,),
+    )
+    conn.commit()
+    row = conn.execute(
+        "SELECT * FROM follow_ups WHERE id = ?", (follow_up_id,)
+    ).fetchone()
+    conn.close()
+    if row:
+        record_goal_event(follow_up_id, event_type, {"phase": "active"})
+    return _follow_up_dict(row) if row else None
+
+
+def pause_follow_up(follow_up_id: int) -> dict[str, Any] | None:
+    """暂停一个进行中的目标；已完成的不能暂停。"""
+    return _phase_event(follow_up_id, "paused", "paused")
+
+
+def resume_follow_up(follow_up_id: int) -> dict[str, Any] | None:
+    """从暂停恢复为进行中，并清零 stall 计数。"""
+    return _reactivate_follow_up(follow_up_id, "resumed")
+
+
+def block_follow_up(
+    follow_up_id: int,
+    reason_code: str = "stalled",
+    reason_message: str = "暂缓主动跟进",
+) -> dict[str, Any] | None:
+    """显式阻塞一个目标，记录阻塞原因。"""
+    conn = _conn()
+    row = conn.execute(
+        "SELECT * FROM follow_ups WHERE id = ?", (follow_up_id,)
+    ).fetchone()
+    if not row or row["status"] == "done":
+        conn.close()
+        return None
+    reason = json.dumps(
+        {"code": reason_code, "message": reason_message}, ensure_ascii=False
+    )
+    conn.execute(
+        "UPDATE follow_ups SET phase = 'blocked', blocked_reason = ?, "
+        "updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        (reason, follow_up_id),
+    )
+    conn.commit()
+    row = conn.execute(
+        "SELECT * FROM follow_ups WHERE id = ?", (follow_up_id,)
+    ).fetchone()
+    conn.close()
+    if row:
+        record_goal_event(
+            follow_up_id,
+            "blocked",
+            {"reason": {"code": reason_code, "message": reason_message}},
+        )
+    return _follow_up_dict(row) if row else None
+
+
+def unblock_follow_up(follow_up_id: int) -> dict[str, Any] | None:
+    """解除阻塞，恢复为进行中并清零 stall。"""
+    return _reactivate_follow_up(follow_up_id, "unblocked")
+
+
+def mark_goal_stalled(follow_up_id: int) -> dict[str, Any] | None:
+    """目标被提醒却未推进时记一次 stall；连续达到阈值自动 blocked。
+
+    只在 phase=active、status=open 的目标上生效；已暂停/已阻塞的不重复累计。
+    """
+    conn = _conn()
+    row = conn.execute(
+        "SELECT * FROM follow_ups WHERE id = ?", (follow_up_id,)
+    ).fetchone()
+    if not row or row["status"] != "open" or row["phase"] != "active":
+        conn.close()
+        return None
+    stalled = int(row["stall_rounds"] or 0) + 1
+    if stalled >= GOAL_BLOCK_AFTER_STALL_ROUNDS:
+        reason = json.dumps(
+            {"code": "stalled", "message": "连续多轮未推进，暂缓主动跟进"},
+            ensure_ascii=False,
+        )
+        conn.execute(
+            "UPDATE follow_ups SET stall_rounds = ?, phase = 'blocked', "
+            "blocked_reason = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (stalled, reason, follow_up_id),
+        )
+        event_type = "blocked"
+    else:
+        conn.execute(
+            "UPDATE follow_ups SET stall_rounds = ?, updated_at = CURRENT_TIMESTAMP "
+            "WHERE id = ?",
+            (stalled, follow_up_id),
+        )
+        event_type = ""
+    conn.commit()
+    row = conn.execute(
+        "SELECT * FROM follow_ups WHERE id = ?", (follow_up_id,)
+    ).fetchone()
+    conn.close()
+    if event_type:
+        record_goal_event(
+            follow_up_id,
+            event_type,
+            {"reason": {"code": "stalled", "message": "连续多轮未推进，暂缓主动跟进"}},
+        )
+    return _follow_up_dict(row) if row else None

@@ -33,17 +33,21 @@ from app.config import (
 
 _RESEARCH_SIGNAL = re.compile(
     r"研究|调研|了解|行情|行业|市场|最新|现在|当前|趋势|"
+    r"分析|最近|近期|如何|怎么样|评估|盘点|"
     r"research|market|industry|latest|current|trend",
     re.IGNORECASE,
 )
 _CREATE_CLAUSE = re.compile(
     r"(?:创建|新建|保存|导出|生成)\s*(?:一个|一份)?\s*"
-    r"(?:[^\s，。,；;]{1,120}\.md(?:\s*(?:文档|文件))?|(?:markdown|md|文档|文件))"
+    r"(?:[\w\u3400-\u9fff（）() _-]{1,120}\.(?:md|txt|docx?|pdf|markdown)(?:\s*(?:文档|文件))?|"
+    r"(?:markdown|md|txt|文档|文件))"
     r"[^，。,；;]*[，。,；;]?",
     re.IGNORECASE,
 )
 _LEADING_REQUEST = re.compile(
-    r"^(?:请|帮我|麻烦|我想|想要|请帮我|帮忙)?(?:了解一下|了解|研究一下|研究|调研一下|调研)?",
+    r"^(?:请|帮我|麻烦|我想|想要|请帮我|帮忙)?"
+    r"(?:分析一下|了解一下|研究一下|调研一下|查一下|查查|看看|看下|"
+    r"分析|了解|研究|调研|查)?",
     re.IGNORECASE,
 )
 _TRACKING_QUERY_KEYS = {"gclid", "fbclid", "mc_cid", "mc_eid"}
@@ -55,7 +59,25 @@ _ASCII_PHRASE = re.compile(
     r"[A-Za-z][A-Za-z0-9.+#-]*(?![A-Za-z0-9])"
 )
 _QUERY_TERM = re.compile(r"[A-Za-z0-9][A-Za-z0-9.+#-]{1,}|[\u3400-\u9fff]{2,}")
-_QUERY_STOPWORDS = {"现在", "当前", "情况", "最新", "了解", "研究", "current", "latest", "research"}
+_QUERY_STOPWORDS = {
+    "现在",
+    "当前",
+    "情况",
+    "最新",
+    "了解",
+    "研究",
+    "最近",
+    "近期",
+    "current",
+    "latest",
+    "research",
+}
+_QUERY_FILLER = re.compile(
+    r"分析一下|研究一下|调研一下|了解一下|查一下|查查|看看|看下|"
+    r"分析|研究|调研|了解|查|帮我|请|麻烦|我想|想要|一下|"
+    r"最近的|最近|近期|现在的|当前的|目前的|现在|当前|目前|最新|怎么样|如何|什么情况|的",
+    re.IGNORECASE,
+)
 
 
 class ResearchError(Exception):
@@ -122,6 +144,92 @@ class SearchProvider(Protocol):
     def read(self, url: str) -> str: ...
 
 
+class So360SearchProvider:
+    """360 搜索 HTML Provider：从结果块提取真实 URL（data-mdurl）、标题与摘要。
+
+    360 结果块的 <a> href 是 so.com/link?m=... 跳转链，真实目标 URL 在同标签的
+    data-mdurl 属性里，本解析器只信任该属性。连续多次请求稳定，无反爬验证码。
+    """
+
+    def __init__(
+        self,
+        endpoint: str = "https://www.so.com/s",
+        timeout_seconds: float = RESEARCH_TIMEOUT_SECONDS,
+        user_agent: str = RESEARCH_USER_AGENT,
+    ):
+        self.endpoint = endpoint
+        self.timeout_seconds = timeout_seconds
+        self.user_agent = user_agent
+
+    def search(self, query: str, limit: int) -> list[SearchResult]:
+        separator = "&" if "?" in self.endpoint else "?"
+        page = _fetch_html(
+            f"{self.endpoint}{separator}q={quote_plus(query)}",
+            timeout_seconds=self.timeout_seconds,
+            user_agent=self.user_agent,
+            max_bytes=RESEARCH_MAX_RESPONSE_BYTES * 4,
+        )
+        parser = _So360SearchPageParser()
+        parser.feed(page)
+        parser.close()
+        return parser.results[:limit]
+
+    def read(self, url: str) -> str:
+        page = _fetch_html(
+            url,
+            timeout_seconds=self.timeout_seconds,
+            user_agent=self.user_agent,
+            max_bytes=RESEARCH_MAX_RESPONSE_BYTES,
+        )
+        parser = _VisibleTextParser()
+        parser.feed(page)
+        parser.close()
+        return _collapse_text(" ".join(parser.parts))
+
+
+class BaiduSearchProvider:
+    """百度 HTML 搜索 Provider：从结果块提取真实 URL（data-url/mu）、标题与摘要。
+
+    百度结果页的 <h3><a href=...> 是跳转链（baidu.com/link?url=...），而真实目标
+    URL 在结果块的 data-url 或 mu 属性里，本解析器只信任这两个属性。
+    """
+
+    def __init__(
+        self,
+        endpoint: str = "https://www.baidu.com/s",
+        timeout_seconds: float = RESEARCH_TIMEOUT_SECONDS,
+        user_agent: str = RESEARCH_USER_AGENT,
+    ):
+        self.endpoint = endpoint
+        self.timeout_seconds = timeout_seconds
+        self.user_agent = user_agent
+
+    def search(self, query: str, limit: int) -> list[SearchResult]:
+        separator = "&" if "?" in self.endpoint else "?"
+        page = _fetch_html(
+            f"{self.endpoint}{separator}wd={quote_plus(query)}",
+            timeout_seconds=self.timeout_seconds,
+            user_agent=self.user_agent,
+            max_bytes=RESEARCH_MAX_RESPONSE_BYTES * 4,
+        )
+        parser = _BaiduSearchPageParser()
+        parser.feed(page)
+        parser.close()
+        return parser.results[:limit]
+
+    def read(self, url: str) -> str:
+        page = _fetch_html(
+            url,
+            timeout_seconds=self.timeout_seconds,
+            user_agent=self.user_agent,
+            max_bytes=RESEARCH_MAX_RESPONSE_BYTES,
+        )
+        parser = _VisibleTextParser()
+        parser.feed(page)
+        parser.close()
+        return _collapse_text(" ".join(parser.parts))
+
+
 class HtmlSearchProvider:
     """无需密钥的 HTML 搜索 Provider；支持 Bing 和 DuckDuckGo 结果页。"""
 
@@ -168,6 +276,7 @@ def parse_research_request(text: str) -> ResearchRequest | None:
         return None
     query = _CREATE_CLAUSE.sub(" ", normalized)
     query = _LEADING_REQUEST.sub("", query).strip(" ，,。；;：:")
+    query = refine_research_query(query)
     if len(query) < 2:
         return None
     return ResearchRequest(query=query[:180])
@@ -201,9 +310,41 @@ async def research_public_sources(
 
     if not results:
         raise ResearchError("没有找到可用的公开来源。", "search_no_results")
-    results = [result for result in results if is_relevant_search_result(result, query)]
-    if not results:
+    relevant = [result for result in results if is_relevant_search_result(result, query)]
+    if not relevant:
+        # 降级重试：第一次搜索命中噪音词（如“分析”词典页）时，换一个构造的
+        # 搜索词再试一次——先试净化后的核心词，再试不带年份的干净主题。
+        refined = refine_research_query(query)
+        year = str(current.year)
+        retry_candidates: list[str] = []
+        if refined:
+            retry_candidates.append(build_search_query(refined, current))
+            core = refined.replace(year, "").strip(" ，,。；;：:")
+            if core and core != refined:
+                retry_candidates.append(core)
+            if refined not in retry_candidates and refined != search_query:
+                retry_candidates.append(refined)
+        for retry_query in retry_candidates:
+            if not retry_query or retry_query == search_query:
+                continue
+            try:
+                retry_results = await asyncio.to_thread(
+                    search_provider.search, retry_query, RESEARCH_MAX_SEARCH_RESULTS
+                )
+            except (HTTPError, URLError, OSError, TimeoutError):
+                retry_results = []
+            except Exception:
+                retry_results = []
+            relevant = [
+                result
+                for result in retry_results
+                if is_relevant_search_result(result, refined or query)
+            ]
+            if relevant:
+                break
+    if not relevant:
         raise ResearchError("搜索结果与研究主题相关性不足。", "irrelevant_search_results")
+    results = relevant
 
     sources: list[ResearchSource] = []
     seen_urls: set[str] = set()
@@ -271,9 +412,20 @@ async def research_public_sources(
     )
 
 
+def refine_research_query(query: str) -> str:
+    """从口语化研究请求提炼核心主题词，供降级重试使用。"""
+    cleaned = _TIME_FILLER.sub("", query)
+    cleaned = _QUERY_FILLER.sub(" ", cleaned)
+    return _collapse_text(cleaned).strip(" ，,。；;：:")
+
+
 def build_search_query(query: str, now: datetime | None = None) -> str:
-    """清理口语化时效词，并对明确英文产品名使用精确短语检索。"""
+    """清理口语化动词与文件动作词，保留核心主题，并对英文产品名使用精确短语检索。"""
     cleaned = _collapse_text(_TIME_FILLER.sub("", query)).strip(" ，,。；;：:")
+    cleaned = _QUERY_FILLER.sub(" ", cleaned)
+    cleaned = _collapse_text(cleaned).strip(" ，,。；;：:")
+    if not cleaned:
+        return ""
     phrases = [match.group(0).strip() for match in _ASCII_PHRASE.finditer(cleaned)]
     if phrases:
         longest = max(phrases, key=len)
@@ -282,16 +434,30 @@ def build_search_query(query: str, now: datetime | None = None) -> str:
     return f"{cleaned} {current.year}" if str(current.year) not in cleaned else cleaned
 
 
+def _relevance_terms(query: str) -> list[str]:
+    """从研究主题提取相关性匹配词：英文原样，中文按 2 字窗口拆分，忽略口语噪音。"""
+    cleaned = _TIME_FILLER.sub("", query)
+    cleaned = _QUERY_FILLER.sub(" ", cleaned)
+    terms: list[str] = []
+    for token in _QUERY_TERM.findall(cleaned):
+        lowered = token.lower()
+        if lowered in _QUERY_STOPWORDS:
+            continue
+        if lowered in terms:
+            continue
+        if re.fullmatch(r"[\u3400-\u9fff]{2,}", token):
+            windows = [token[i : i + 2] for i in range(len(token) - 1)]
+            terms.extend(item for item in windows if item not in terms)
+        else:
+            terms.append(lowered)
+    return terms
+
+
 def is_relevant_search_result(result: SearchResult, query: str) -> bool:
-    """避免把只命中宽泛品牌词的网页当作特定研究来源。"""
+    """按核心主题词判断搜索结果是否相关；口语动作词不计入匹配。"""
     searchable = _collapse_text(f"{result.title} {result.url} {result.snippet}").lower()
     compact = re.sub(r"\s+", "", searchable)
-    terms = []
-    for term in _QUERY_TERM.findall(_TIME_FILLER.sub("", query)):
-        lowered = term.lower()
-        if lowered in _QUERY_STOPWORDS or lowered in terms:
-            continue
-        terms.append(lowered)
+    terms = _relevance_terms(query)
     if not terms:
         return True
     matches = sum(1 for term in terms if term in searchable or term.replace(" ", "") in compact)
@@ -300,6 +466,10 @@ def is_relevant_search_result(result: SearchResult, query: str) -> bool:
 
 
 def get_search_provider() -> SearchProvider:
+    if SEARCH_PROVIDER == "so360_html":
+        return So360SearchProvider()
+    if SEARCH_PROVIDER == "baidu_html":
+        return BaiduSearchProvider()
     if SEARCH_PROVIDER not in {"bing_html", "duckduckgo_html"}:
         raise ResearchError("当前搜索 Provider 未配置。", "search_provider_unavailable")
     return HtmlSearchProvider()
@@ -498,7 +668,17 @@ def _fetch_html(url: str, *, timeout_seconds: float, user_agent: str, max_bytes:
     safe_url = canonicalize_url(url)
     if not safe_url:
         raise ResearchError("来源地址不安全或不受支持。", "unsafe_source_url")
-    request = Request(safe_url, headers={"User-Agent": user_agent, "Accept": "text/html,application/xhtml+xml"})
+    request = Request(
+        safe_url,
+        headers={
+            "User-Agent": user_agent,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "zh-CN,zh;q=0.9",
+            "Accept-Encoding": "identity",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
+        },
+    )
     opener = build_opener(_SafeRedirectHandler())
     try:
         with opener.open(request, timeout=timeout_seconds) as response:
@@ -515,6 +695,160 @@ def _fetch_html(url: str, *, timeout_seconds: float, user_agent: str, max_bytes:
     except ResearchError:
         raise
     return payload.decode(charset, errors="replace")
+
+
+class _So360SearchPageParser(HTMLParser):
+    """解析 360 结果页：标题 + 真实 URL（data-mdurl）+ 摘要。"""
+
+    _RESULT_BLOCK = re.compile(r"(?:^|\s)res-list")
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.results: list[SearchResult] = []
+        self._in_result = False
+        self._block_url: str | None = None
+        self._title_parts: list[str] = []
+        self._snippet_parts: list[str] = []
+        self._in_title = False
+        self._in_snippet = False
+        self._block_depth = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attributes = dict(attrs)
+        classes = attributes.get("class") or ""
+        if tag == "li":
+            if self._in_result:
+                self._block_depth += 1
+                return
+            if self._RESULT_BLOCK.search(classes):
+                self._in_result = True
+                self._block_url = None
+                self._title_parts = []
+                self._snippet_parts = []
+                self._block_depth = 1
+            return
+        if not self._in_result:
+            return
+        if tag == "h3":
+            self._in_title = True
+        elif tag == "a" and self._in_title:
+            real_url = attributes.get("data-mdurl") or ""
+            canonical = canonicalize_url(real_url)
+            if canonical:
+                self._block_url = canonical
+            self._title_parts = []
+        elif tag == "p" and "res-desc" in classes:
+            self._in_snippet = True
+
+    def handle_endtag(self, tag: str) -> None:
+        if not self._in_result:
+            return
+        if tag == "h3":
+            self._in_title = False
+        elif tag == "p" and self._in_snippet:
+            self._in_snippet = False
+        elif tag == "li":
+            self._block_depth -= 1
+            if self._block_depth <= 0:
+                title = _collapse_text(" ".join(self._title_parts))
+                snippet = _collapse_text(" ".join(self._snippet_parts))
+                if title and self._block_url:
+                    self.results.append(
+                        SearchResult(title=title, url=self._block_url, snippet=snippet)
+                    )
+                self._in_result = False
+                self._block_url = None
+
+    def handle_data(self, data: str) -> None:
+        if not self._in_result:
+            return
+        if self._in_title:
+            self._title_parts.append(data)
+        if self._in_snippet:
+            self._snippet_parts.append(data)
+
+
+class _BaiduSearchPageParser(HTMLParser):
+    """解析百度结果页：标题 + 真实 URL（data-url/mu 属性）+ 摘要。
+
+    百度把真实目标 URL 放在结果块的 data-url 或 mu 属性里，<h3> 里的 href 是
+    baidu.com/link?url=... 跳转链，不能直接采用。摘要取结果块内的正文片段。
+    """
+
+    _RESULT_BLOCK = re.compile(r"(?:^|\s)result")
+    _SKIP_CLASSES = ("chat-input", "recommend", "inputPanel")
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.results: list[SearchResult] = []
+        self._in_result = False
+        self._block_url: str | None = None
+        self._title_parts: list[str] = []
+        self._snippet_parts: list[str] = []
+        self._in_title = False
+        self._in_snippet = False
+        self._block_depth = 0
+        self._skip_depth = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attributes = dict(attrs)
+        classes = attributes.get("class") or ""
+        if tag == "div":
+            if self._in_result:
+                self._block_depth += 1
+                return
+            if self._RESULT_BLOCK.search(classes) and not any(
+                skip in classes for skip in self._SKIP_CLASSES
+            ):
+                real_url = attributes.get("data-url") or attributes.get("mu") or ""
+                canonical = canonicalize_url(real_url)
+                if canonical:
+                    self._in_result = True
+                    self._block_url = canonical
+                    self._title_parts = []
+                    self._snippet_parts = []
+                    self._block_depth = 1
+            return
+        if not self._in_result:
+            return
+        if tag == "h3":
+            self._in_title = True
+        elif tag == "a" and self._in_title:
+            self._title_parts = []
+        elif tag in {"div", "span", "p"} and (
+            "content-right" in classes
+            or "c-span-last" in classes
+            or "space-layout" in classes
+            or "c-abstract" in classes
+        ):
+            self._in_snippet = True
+
+    def handle_endtag(self, tag: str) -> None:
+        if not self._in_result:
+            return
+        if tag == "h3":
+            self._in_title = False
+        elif tag in {"div", "span", "p"} and self._in_snippet:
+            self._in_snippet = False
+        elif tag == "div":
+            self._block_depth -= 1
+            if self._block_depth <= 0:
+                title = _collapse_text(" ".join(self._title_parts))
+                snippet = _collapse_text(" ".join(self._snippet_parts))
+                if title and self._block_url:
+                    self.results.append(
+                        SearchResult(title=title, url=self._block_url, snippet=snippet)
+                    )
+                self._in_result = False
+                self._block_url = None
+
+    def handle_data(self, data: str) -> None:
+        if not self._in_result:
+            return
+        if self._in_title:
+            self._title_parts.append(data)
+        if self._in_snippet:
+            self._snippet_parts.append(data)
 
 
 class _SearchPageParser(HTMLParser):

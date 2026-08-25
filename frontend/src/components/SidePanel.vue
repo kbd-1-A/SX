@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { NButton, NSpace, NTag, NEmpty } from 'naive-ui'
 import CompanionPanel from './CompanionPanel.vue'
 import MemoryManager from './MemoryManager.vue'
@@ -34,6 +34,31 @@ interface Profile {
 
 const profile = ref<Profile>({ intimacy: 0, interests: {}, updated_at: null })
 
+interface RhythmProfile {
+  total_turns: number
+  active_hours: Array<{ hour: number; count: number }>
+  topic_heat: Array<{ mask: string; count: number }>
+  continuation_by_mode: Array<{ reply_mode: string; total: number; continued: number; rate: number }>
+}
+
+const rhythm = ref<RhythmProfile | null>(null)
+
+const bestMode = computed(() => {
+  const modes = rhythm.value?.continuation_by_mode || []
+  const candidates = modes.filter((mode) => mode.total >= 2 && mode.rate >= 0.6)
+  if (!candidates.length) return null
+  return candidates.reduce((best, mode) => (mode.rate > best.rate ? mode : best))
+})
+
+async function loadRhythm() {
+  try {
+    const res = await fetch('/api/observations/rhythm?days=30')
+    if (res.ok) rhythm.value = await res.json()
+  } catch {
+    // 节奏加载失败不影响主界面
+  }
+}
+
 async function load() {
   const res = await fetch('/api/profile')
   if (res.ok) profile.value = await res.json()
@@ -46,8 +71,17 @@ async function bump() {
   await load()
 }
 
-onMounted(load)
-watch(() => chat.messages.length, load)
+onMounted(() => {
+  load()
+  loadRhythm()
+})
+watch(
+  () => chat.messages.length,
+  () => {
+    load()
+    loadRhythm()
+  },
+)
 </script>
 
 <template>
@@ -91,6 +125,22 @@ watch(() => chat.messages.length, load)
       </div>
       <n-button size="small" @click="bump">手动 +1 亲密度</n-button>
     </n-space>
+
+    <h3 style="margin: 0; font-size: 15px">节奏观察</h3>
+    <div style="font-size: 12px; color: #666; line-height: 1.7">
+      <div v-if="rhythm && rhythm.total_turns >= 5">
+        <div v-if="rhythm.active_hours.length">
+          常活跃：{{ rhythm.active_hours.slice(0, 2).map(h => `${String(h.hour).padStart(2, '0')}:00`).join('、') }}
+        </div>
+        <div v-if="rhythm.topic_heat.length">
+          聊得最多：{{ maskNames[rhythm.topic_heat[0].mask] || rhythm.topic_heat[0].mask }}
+        </div>
+        <div v-if="bestMode">
+          我按「{{ replyModeNames[bestMode.reply_mode] || bestMode.reply_mode }}」接你时你更愿意继续聊
+        </div>
+      </div>
+      <div v-else>还在了解你的节奏，多聊聊就会更准</div>
+    </div>
 
     <CompanionPanel :interaction-key="chat.userInteractionSequence" />
 

@@ -23,13 +23,37 @@ class AsrResult:
     duration_ms: int
 
 
+def _resolve_model_ref(model_ref: str) -> str:
+    """把 ASR_MODEL 解析为 faster-whisper 可接受的模型引用。
+
+    支持两种形态：
+
+    - 本地模型目录（存在时按路径加载，例如 `backend/models/faster-whisper-base`）
+    - HF 模型名（不存在对应本地路径时原样透传，例如 `base`/`tiny`，
+      由 faster-whisper 配合 `local_files_only=True` 从本地 HF 缓存解析）
+    """
+    value = model_ref.strip()
+    if not value:
+        raise RuntimeError("ASR_MODEL is empty")
+    path = Path(value)
+    if path.exists():
+        return str(path)
+    looks_like_path = (
+        "/" in value
+        or "\\" in value
+        or value.startswith(".")
+        or (len(value) > 2 and value[1] == ":")
+    )
+    if looks_like_path:
+        raise RuntimeError(f"local ASR model path not found: {value}")
+    return value
+
+
 @lru_cache(maxsize=1)
 def _model() -> WhisperModel:
-    model_path = Path(ASR_MODEL)
-    if not model_path.exists():
-        raise RuntimeError(f"local ASR model not found: {model_path}")
+    model_ref = _resolve_model_ref(ASR_MODEL)
     return WhisperModel(
-        str(model_path),
+        model_ref,
         device=ASR_DEVICE,
         compute_type=ASR_COMPUTE_TYPE,
         local_files_only=True,

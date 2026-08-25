@@ -373,6 +373,64 @@ def observe_behavior(text: str, source_message_id: int | None) -> dict[str, Any]
     return data
 
 
+_FEEDBACK_CLICHE_TELLS = (
+    "我理解你的感受",
+    "我完全理解",
+    "作为AI",
+    "作为 AI",
+    "希望这能帮助你",
+    "以下是几点",
+    "从某种程度上",
+    "总的来说",
+    "综上",
+)
+_FEEDBACK_LONG_REPLY_CHARS = 220
+
+
+def observe_feedback(
+    content: str, rating: str, source_message_id: int | None
+) -> dict[str, Any]:
+    """把用户对时叙回复的「踩」转成确定性的表达偏好信号。
+
+    保守：只有可操作的负反馈才进入画像，「赞」不改写人格。
+    连续多次同类负反馈才会激活偏好（复用 INFERRED_ACTIVATION_COUNT），
+    避免一次误点改变时叙。
+    """
+    if rating != "negative":
+        return get_behavior_profile()
+    content = (content or "").strip()
+    if not content:
+        return get_behavior_profile()
+    data = _load()
+    now = _now()
+    changed = False
+    if len(content) > _FEEDBACK_LONG_REPLY_CHARS:
+        _record_signal(
+            data,
+            kind="styles",
+            key="short_reply",
+            text=content,
+            source_message_id=source_message_id,
+            explicit=False,
+            now=now,
+        )
+        changed = True
+    if any(tell in content for tell in _FEEDBACK_CLICHE_TELLS):
+        _record_signal(
+            data,
+            kind="styles",
+            key="less_cliche",
+            text=content,
+            source_message_id=source_message_id,
+            explicit=False,
+            now=now,
+        )
+        changed = True
+    if changed:
+        _save(data)
+    return data
+
+
 def get_behavior_profile() -> dict[str, Any]:
     """读取画像并在读取时让过期项失效。"""
     data = _load()

@@ -65,7 +65,7 @@ def test_user_fact_is_not_treated_as_assistant_completion_claim():
 def test_capability_rules_explicitly_forbid_fake_execution():
     rules = format_action_capability_rules()
 
-    assert "支持在用户明确要求时创建新的 .md 文件" in rules
+    assert "支持在用户明确要求时创建新的 .md 或 .txt 文件" in rules
     assert "没有系统返回的成功结果" in rules
 
 

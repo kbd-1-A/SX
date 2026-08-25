@@ -129,6 +129,23 @@
 - 灵魂 `persona/shisu.md` 更新：开篇自述改为「时间的时，叙旧的叙」；用户问起「你是谁 / 还在不在」时回一句「我在」；「像熟人说话」→「像老朋友说话」。`load_core()` 每次现读，改后下一条消息即生效、无需重启后端。
 - 验证：后端 `184 passed`。
 
+### 自主学习机制：反馈 + 目标生命周期（2026-08-15）
+- 借鉴 dsh「自主学习 = 技能 + 目标 + 反馈 + 记忆」的落点，本次落地两块：**消息级反馈** 与 **目标生命周期**。
+- **反馈 sidecar**：对每条 assistant 回复可赞/踩 + 备注；`message_feedback` 表与不可变会话日志分离，乐观并发（带 `if_version`，冲突返回权威当前值），只接受非空 assistant 消息。REST：`PUT/GET/DELETE /api/messages/{id}/feedback`、`GET /api/feedback`、`GET /api/feedback/stats`（`app/api/feedback.py` + `app/memory/feedback.py`）。
+- **反馈反哺行为画像**：负反馈 + 回复过长 → 强化「偏好简短」；负反馈 + 含套话 → 强化「少套话」；连续累计才激活（保守，不因一次误点改人格）。正反馈只留 sidecar 信号，不改写人格（`behavior.observe_feedback`）。
+- 前端：助手消息下方「👍 有帮助 / 👎 不太对」；`done` 事件回填 `assistant_id`，使流式助手消息获得真实 id 以支持反馈。
+- **目标生命周期**：`follow_ups` 升级为目标系统，新增 `phase`(active/paused/blocked)、`stall_rounds`、`blocked_reason`、`completed_at`；每次变更写只追加 `goal_events` 事件（created/edited/paused/resumed/blocked/unblocked/completed/reopened/archived）。
+- 时间引擎对 overdue/open_loop 目标记 stall，连续 3 轮未推进自动 blocked；已完成目标不能暂停/阻塞；用户可暂停/继续/重新跟进（`CompanionPanel` 显示 phase 标签 + 按钮）。
+- 验证：后端 `187 passed`（2 个 `test_router` 用例因本机 `DB_PATH` 环境变量指向 TRAE 目录、`self.py` 读到非项目数据库而失败，与本改动无关，隔离运行 `test_router.py` 同样失败）；前端 `39 passed`；`npm run build` 通过。改后需手动重启后端（`uvicorn` 不带 `--reload`）。
+
+### 自主学习 P1/P2：观察层 + 隐式反馈（2026-08-15）
+- 被动学习保持原样，新增「随轮自主学习」：不靠对话内容，靠行为痕迹学节奏。
+- **P1 观察层**（纯确定性、零 LLM）：每轮对话落 `turn_observations`（时间/面具/动作/情绪/长度，本地时间预计算 hour/weekday）；聚合活跃时段、话题热度、风格-续聊相关性；`format_rhythm_profile` 注入 system prompt（任何失败静默返回空，绝不影响主回复）。REST：`GET /api/observations/rhythm`（`app/memory/observations.py` + `app/api/observations.py`）。
+- **P2 隐式反馈**（append-only `implicit_feedback`）：紧接着上一条回复继续聊 → `continued_after` 正向信号；中断长回复（≥60 字）→ `interrupted_long` 负向信号；`apply_implicit_learning` 把未消费的中断信号按保守阈值（复用「3 次才激活」）反哺行为画像，幂等消费、失败只记日志。
+- 并发地基：SQLite 开启 WAL + `busy_timeout=5000`（读不阻塞写）；未引入 Redis（本地单进程不需要）。
+- 前端：侧栏新增「节奏观察」卡片（常活跃时段 / 聊得最多 / 哪种接话你更愿意继续）。
+- 验证：后端 `193 passed`（新增 test_observations / test_implicit_feedback 共 6 个；2 个 `test_router` 用例因本机 `DB_PATH` 环境变量指向 TRAE 目录失败，与本改动无关）；前端 build 通过。改后需手动重启后端。
+
 ### 代码结构与运行
 - **灵魂唯一来源**：`backend/persona/shisu.md`——改它 = 改时叙性格，前后端都以它为准
 - 人格分层：`persona/shisu.md`（核心自我）+ `persona/masks/`（4 面具表达层）；路由在 `app/agents/mask.py`（规则词表 + LLM 兜底）

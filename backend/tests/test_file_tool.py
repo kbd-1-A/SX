@@ -1,4 +1,4 @@
-"""Markdown 文件工具：路径边界、排重和落盘校验。"""
+"""文档文件工具（.md/.txt）：路径边界、排重和落盘校验。"""
 
 import hashlib
 from datetime import date
@@ -47,8 +47,8 @@ def test_desktop_target_uses_resolved_desktop_root(monkeypatch, tmp_path):
     assert artifact.target == "desktop"
 
 
-@pytest.mark.parametrize("filename", ["notes.txt", "../notes.md", "folder/notes.md", r"folder\notes.md"])
-def test_rejects_non_markdown_and_path_traversal(monkeypatch, tmp_path, filename):
+@pytest.mark.parametrize("filename", ["notes.pdf", "../notes.md", "folder/notes.md", r"folder\notes.md"])
+def test_rejects_unsupported_extension_and_path_traversal(monkeypatch, tmp_path, filename):
     patch_roots(monkeypatch, tmp_path)
 
     with pytest.raises(MarkdownFileToolError):
@@ -122,10 +122,49 @@ def test_parse_file_creation_request_has_explicit_creation_boundary():
     assert files_mod.parse_file_creation_request("可以帮我创建一个 md 文件吗？") is not None
 
 
-def test_parse_rejects_unapproved_path_and_non_markdown_format():
+def test_parse_rejects_unapproved_path_and_unsupported_format():
     outside = files_mod.parse_file_creation_request("创建一份文档保存到 C:\\temp")
-    non_markdown = files_mod.parse_file_creation_request("创建 report.pdf 文件放在桌面")
+    unsupported_format = files_mod.parse_file_creation_request("创建 report.pdf 文件放在桌面")
 
     assert outside is not None and outside.unsupported_reason
-    assert non_markdown is not None
-    assert non_markdown.unsupported_reason == "第一版文件工具只支持创建 .md Markdown 文件。"
+    assert unsupported_format is not None
+    assert unsupported_format.unsupported_reason == "第一版文件工具只支持创建 .md 或 .txt 文件。"
+
+
+def test_creates_txt_file_with_plain_text_mime(monkeypatch, tmp_path):
+    _, output = patch_roots(monkeypatch, tmp_path)
+    content = "AI 销售行情分析\n\n仅供学习参考。\n"
+
+    artifact = files_mod.create_markdown_file(
+        target="output", filename="AI销售行情分析.txt", content=content
+    )
+
+    path = output / "AI销售行情分析.txt"
+    assert path.read_text(encoding="utf-8") == content
+    assert artifact.display_name == "AI销售行情分析.txt"
+    assert artifact.as_event()["mime_type"] == "text/plain"
+
+
+def test_txt_duplicate_filename_gets_suffix_without_overwrite(monkeypatch, tmp_path):
+    _, output = patch_roots(monkeypatch, tmp_path)
+    (output / "记录.txt").parent.mkdir(parents=True)
+    (output / "记录.txt").write_text("旧内容", encoding="utf-8")
+
+    artifact = files_mod.create_markdown_file(
+        target="output", filename="记录.txt", content="新内容\n"
+    )
+
+    assert (output / "记录.txt").read_text(encoding="utf-8") == "旧内容"
+    assert artifact.display_name == "记录 (2).txt"
+    assert (output / "记录 (2).txt").read_text(encoding="utf-8") == "新内容\n"
+
+
+def test_parse_txt_creation_request_extracts_filename():
+    request = files_mod.parse_file_creation_request(
+        "帮我创建 AI销售行情分析.txt 放在桌面"
+    )
+
+    assert request is not None
+    assert request.target == "desktop"
+    assert request.filename == "AI销售行情分析.txt"
+    assert request.unsupported_reason is None

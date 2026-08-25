@@ -10,10 +10,15 @@ from app.memory.anchors import (
     update_anchor,
 )
 from app.memory.companion import (
+    block_follow_up,
     create_follow_up,
     extract_follow_up_candidates,
     get_companion_overview,
+    list_goal_events,
+    pause_follow_up,
+    resume_follow_up,
     set_companion_settings,
+    unblock_follow_up,
     update_follow_up,
 )
 from app.memory.profile import bump_intimacy, get_profile
@@ -151,6 +156,52 @@ def api_update_follow_up(follow_up_id: int, payload: FollowUpUpdatePayload):
     if not follow_up:
         raise HTTPException(status_code=404, detail="follow-up not found")
     return follow_up
+
+
+class GoalBlockPayload(BaseModel):
+    code: str = "stalled"
+    message: str = "暂缓主动跟进"
+
+
+@router.post("/companion/follow-ups/{follow_up_id}/pause")
+def api_pause_follow_up(follow_up_id: int):
+    goal = pause_follow_up(follow_up_id)
+    if not goal:
+        raise HTTPException(status_code=404, detail="follow-up not found or already done")
+    return goal
+
+
+@router.post("/companion/follow-ups/{follow_up_id}/resume")
+def api_resume_follow_up(follow_up_id: int):
+    goal = resume_follow_up(follow_up_id)
+    if not goal:
+        raise HTTPException(status_code=404, detail="follow-up not found or already done")
+    return goal
+
+
+@router.post("/companion/follow-ups/{follow_up_id}/block")
+def api_block_follow_up(follow_up_id: int, payload: GoalBlockPayload):
+    goal = block_follow_up(
+        follow_up_id,
+        reason_code=payload.code,
+        reason_message=payload.message,
+    )
+    if not goal:
+        raise HTTPException(status_code=404, detail="follow-up not found or already done")
+    return goal
+
+
+@router.post("/companion/follow-ups/{follow_up_id}/unblock")
+def api_unblock_follow_up(follow_up_id: int):
+    goal = unblock_follow_up(follow_up_id)
+    if not goal:
+        raise HTTPException(status_code=404, detail="follow-up not found or already done")
+    return goal
+
+
+@router.get("/companion/follow-ups/{follow_up_id}/events")
+def api_goal_events(follow_up_id: int, limit: int = 50):
+    return list_goal_events(follow_up_id, limit=limit)
 
 
 @router.get("/memory/anchors")

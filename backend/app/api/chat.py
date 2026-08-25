@@ -9,6 +9,8 @@
 
 import json
 import logging
+import re
+from datetime import date
 from time import perf_counter
 from uuid import uuid4
 
@@ -25,8 +27,20 @@ from app.config import MAX_USER_MESSAGE_CHARS
 from app.memory.anchors import add_anchors_from_text
 from app.memory.behavior import observe_behavior
 from app.memory.companion import create_follow_ups_from_text
+from app.memory.observations import (
+    apply_implicit_learning,
+    record_continuation_signal,
+    record_interrupt_signal,
+    record_turn,
+)
 from app.memory.self import add_mask_milestone
 from app.memory.store import add_message, get_or_create_session
+from app.services.weather import (
+    WeatherError,
+    default_city,
+    extract_city_name,
+    fetch_weather_summary,
+)
 from app.tools.files import (
     MarkdownArtifact,
     MarkdownFileToolError,
@@ -87,8 +101,9 @@ def _socket_is_closed(ws: WebSocket) -> bool:
 
 
 def _format_artifact_success(artifact: MarkdownArtifact) -> str:
+    kind = "文本文件" if artifact.display_name.lower().endswith(".txt") else "Markdown 文件"
     return (
-        f"已创建 Markdown 文件：{artifact.display_name}\n"
+        f"已创建 {kind}：{artifact.display_name}\n"
         f"位置：{artifact.path}\n"
         f"已校验：{_format_file_size(artifact.size_bytes)}，SHA-256 {artifact.sha256[:12]}..."
     )
@@ -100,9 +115,75 @@ def _format_file_size(size_bytes: int) -> str:
     return f"{size_bytes / 1024:.1f} KB"
 
 
+_ACTION_RESULT_PREFIXES = ("已创建", "文档文件没有创建成功", "已读取", "联网检索未完成")
+_POLLUTED_DRAFT_PATTERN = re.compile(
+    r"已创建.{0,12}(?:Markdown|文本)文件|位置：[^\n]*(?:桌面|时序-output)|SHA-256"
+)
+
+
+def _draft_unusable(draft: str) -> bool:
+    """草稿不可直接落盘的情形：空、模仿行动结果、无 Markdown 结构或只有元描述。
+
+    模型可能受历史里“已创建 Markdown 文件：…SHA-256…”影响输出编造的创建提示，
+    也可能只输出“我准备了一份…草稿”这类元描述而没有正文。这两类都不能写入文件。
+    """
+    text = draft.strip()
+    if not text:
+        return True
+    if _POLLUTED_DRAFT_PATTERN.search(text[:200]):
+        return True
+    if not re.search(r"^\s*#\s+\S", text, re.MULTILINE):
+        return True
+    if len(text) < 120:
+        return True
+    if re.search(r"我准备了一份|这是一份.{0,8}草稿|以下是(?:内容|整理)", text[:150]):
+        return True
+    return False
+
+
+async def _retry_draft(*, research_result, **stream_kwargs) -> tuple[str, str] | None:
+    """再次生成文档草稿；成功返回 (finalized, body)，仍不可用返回 None。"""
+    chunks: list[str] = []
+    async for chunk in stream_reply(**stream_kwargs):
+        if chunk:
+            chunks.append(chunk)
+    retry = "".join(chunks).strip()
+    if not retry:
+        return None
+    body = retry
+    if research_result is not None:
+        retry = finalize_research_markdown(retry, research_result)
+    if _draft_unusable(retry):
+        return None
+    return retry, body
+
+
+def _format_body_preview(body: str) -> str:
+    """把文档正文（或摘要）展示在聊天里，而不是只给来源列表。"""
+    text = body.strip()
+    if not text:
+        return ""
+    if len(text) <= 600:
+        return text
+    return text[:600].rstrip() + "\n\n……（完整内容已保存到文件）"
+
+
+def _derive_query_filename(query: str | None, *, want_txt: bool) -> str | None:
+    """从研究主题生成有意义的默认文件名，避免退化为“时叙文档”。"""
+    if not query:
+        return None
+    cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]', " ", query)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" ._")
+    if not cleaned or len(cleaned) > 60:
+        return None
+    day = date.today().isoformat()
+    ext = ".txt" if want_txt else ".md"
+    return f"{cleaned}_{day}{ext}"
+
+
 def _format_artifact_failure(error: MarkdownFileToolError, draft: str) -> str:
     return (
-        f"Markdown 文件没有创建成功：{error.message}\n"
+        f"文档文件没有创建成功：{error.message}\n"
         "下面保留了尚未保存的草稿：\n\n"
         f"{draft}"
     )
@@ -110,7 +191,7 @@ def _format_artifact_failure(error: MarkdownFileToolError, draft: str) -> str:
 
 def _format_research_event_message(result: ResearchResult) -> str:
     count = len(result.sources)
-    return f"已读取 {count} 个公开来源，正在整理带引用的 Markdown。"
+    return f"已读取 {count} 个公开来源，正在整理带引用的文档。"
 
 
 @router.websocket("/ws/chat")
@@ -235,12 +316,15 @@ async def ws_chat(ws: WebSocket) -> None:
                 break
             continue
 
-        # 记忆提取是非关键副作用，失败不能阻断主对话。
+        # 记忆提取与自主学习副作用是非关键副作用，失败不能阻断主对话。
         try:
             # 姓名/称呼已由结构化锚点统一记录，确保可在记忆管理页编辑和删除。
             add_anchors_from_text(content, user_id)
             observe_behavior(content, user_id)
             create_follow_ups_from_text(content, user_id)
+            # P2 隐式反馈：紧接着上一条回复继续聊 → 正向续聊信号；并消费未处理的中断信号
+            record_continuation_signal(session_id)
+            apply_implicit_learning()
         except Exception:
             logger.exception(
                 "chat_memory_enrichment_failed request_id=%s session_id=%s",
@@ -382,6 +466,52 @@ async def ws_chat(ws: WebSocket) -> None:
             if media_command or action_kind == "media":
                 # 媒体请求已经在上面的受控 Provider 分支处理，不再进入 LLM。
                 pass
+            elif action_kind == "weather":
+                city = extract_city_name(content) or default_city()
+                if not city:
+                    reply = "想帮你看天气，先告诉我你在哪个城市呀，比如「北京今天天气怎么样」。"
+                    await ws.send_text(
+                        json.dumps({"type": "chunk", "content": reply}, ensure_ascii=False)
+                    )
+                else:
+                    try:
+                        weather_result = await fetch_weather_summary(city)
+                    except WeatherError as exc:
+                        logger.warning(
+                            "weather_failed request_id=%s session_id=%s code=%s",
+                            request_id,
+                            session_id,
+                            exc.code,
+                        )
+                        reply = f"天气暂时查不到：{exc.message}"
+                        await ws.send_text(
+                            json.dumps(
+                                {"type": "chunk", "content": reply}, ensure_ascii=False
+                            )
+                        )
+                    else:
+                        weather_full: list[str] = []
+                        async for chunk in stream_reply(
+                            session_id,
+                            content,
+                            mask=mask,
+                            reply_mode=reply_mode,
+                            emotion_state=emotion_state,
+                            weather_result=weather_result,
+                        ):
+                            if not chunk:
+                                continue
+                            weather_full.append(chunk)
+                            await ws.send_text(
+                                json.dumps(
+                                    {"type": "chunk", "content": chunk}, ensure_ascii=False
+                                )
+                            )
+                        reply = "".join(weather_full).strip()
+                        if not reply:
+                            raise AgentEmptyResponseError()
+                assistant_id = add_message(session_id, "assistant", reply)
+
             elif file_request and file_request.unsupported_reason:
                 reply = file_request.unsupported_reason
                 await ws.send_text(
@@ -429,6 +559,11 @@ async def ws_chat(ws: WebSocket) -> None:
                             ensure_ascii=False,
                         )
                     )
+                    preview = _format_body_preview(reply)
+                    if preview:
+                        await ws.send_text(
+                            json.dumps({"type": "chunk", "content": preview}, ensure_ascii=False)
+                        )
                     reply = _format_artifact_success(artifact)
                 await ws.send_text(
                     json.dumps({"type": "chunk", "content": reply}, ensure_ascii=False)
@@ -459,9 +594,46 @@ async def ws_chat(ws: WebSocket) -> None:
                     raise AgentEmptyResponseError()
 
                 if file_request:
+                    body_text = reply
                     if research_result is not None:
                         reply = finalize_research_markdown(reply, research_result)
-                    filename = file_request.filename or derive_markdown_filename(reply)
+                    if _draft_unusable(reply):
+                        retried = await _retry_draft(
+                            session_id=session_id,
+                            user_msg=content,
+                            mask=mask,
+                            reply_mode=reply_mode,
+                            emotion_state=emotion_state,
+                            document_draft=True,
+                            research_result=research_result,
+                            research_failed=research_error is not None,
+                        )
+                        if retried is not None:
+                            reply, body_text = retried
+                            logger.warning(
+                                "chat_draft_retry_succeeded request_id=%s session_id=%s",
+                                request_id,
+                                session_id,
+                            )
+                        else:
+                            logger.warning(
+                                "chat_draft_unusable_after_retry request_id=%s session_id=%s",
+                                request_id,
+                                session_id,
+                            )
+                            reply = build_research_framework(
+                                research_request.query if research_request else content,
+                                "正文内容生成异常，已为你保存研究框架，可重新发起生成。",
+                            )
+                            body_text = reply
+                    filename = (
+                        file_request.filename
+                        or _derive_query_filename(
+                            research_request.query if research_request else None,
+                            want_txt=("txt" in content.lower() or "文本文件" in content),
+                        )
+                        or derive_markdown_filename(reply)
+                    )
                     try:
                         artifact = create_markdown_file(
                             target=file_request.target,
@@ -493,6 +665,13 @@ async def ws_chat(ws: WebSocket) -> None:
                                 ensure_ascii=False,
                             )
                         )
+                        preview = _format_body_preview(body_text)
+                        if preview:
+                            await ws.send_text(
+                                json.dumps(
+                                    {"type": "chunk", "content": preview}, ensure_ascii=False
+                                )
+                            )
                         reply = _format_artifact_success(artifact)
                     await ws.send_text(
                         json.dumps({"type": "chunk", "content": reply}, ensure_ascii=False)
@@ -519,6 +698,14 @@ async def ws_chat(ws: WebSocket) -> None:
                 session_id,
                 round((perf_counter() - started_at) * 1000),
             )
+            try:
+                record_interrupt_signal(session_id, "".join(full))
+            except Exception:
+                logger.exception(
+                    "chat_interrupt_observation_failed request_id=%s session_id=%s",
+                    request_id,
+                    session_id,
+                )
             break
         except AgentError as exc:
             logger.warning(
@@ -539,6 +726,14 @@ async def ws_chat(ws: WebSocket) -> None:
                     session_id,
                     round((perf_counter() - started_at) * 1000),
                 )
+                try:
+                    record_interrupt_signal(session_id, "".join(full))
+                except Exception:
+                    logger.exception(
+                        "chat_interrupt_observation_failed request_id=%s session_id=%s",
+                        request_id,
+                        session_id,
+                    )
                 break
             logger.exception(
                 "chat_runtime_failed request_id=%s session_id=%s",
@@ -565,6 +760,25 @@ async def ws_chat(ws: WebSocket) -> None:
             ):
                 break
             continue
+
+        try:
+            record_turn(
+                session_id=session_id,
+                user_message_id=user_id,
+                assistant_message_id=assistant_id,
+                mask=mask,
+                reply_mode=reply_mode,
+                emotion=emotion_state.get("emotion") if emotion_state else None,
+                user_chars=len(content),
+                reply_chars=len(reply),
+                reply_seconds=round((perf_counter() - started_at) * 1000) / 1000.0,
+            )
+        except Exception:
+            logger.exception(
+                "chat_turn_observation_failed request_id=%s session_id=%s",
+                request_id,
+                session_id,
+            )
 
         try:
             add_mask_milestone(mask)

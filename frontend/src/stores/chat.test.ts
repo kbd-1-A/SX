@@ -138,7 +138,7 @@ describe('chat voice replies', () => {
       code: 'destination_unavailable',
       message: '目标文件夹无法使用。',
     })
-    socket.message({ type: 'chunk', content: 'Markdown 文件没有创建成功。' })
+    socket.message({ type: 'chunk', content: '文档文件没有创建成功。' })
     socket.message({ type: 'done' })
 
     expect(chat.messages[1].artifactFailure).toEqual({

@@ -27,11 +27,11 @@ MAX_MARKDOWN_ARTIFACT_BYTES = int(
     os.getenv("MAX_MARKDOWN_ARTIFACT_BYTES", "500000")
 )
 RESEARCH_ENABLED = os.getenv("RESEARCH_ENABLED", "true").lower() == "true"
-SEARCH_PROVIDER = os.getenv("SEARCH_PROVIDER", "bing_html")
+SEARCH_PROVIDER = os.getenv("SEARCH_PROVIDER", "so360_html")
 SEARCH_ENDPOINT = os.getenv("SEARCH_ENDPOINT", "https://cn.bing.com/search")
 RESEARCH_TIMEOUT_SECONDS = float(os.getenv("RESEARCH_TIMEOUT_SECONDS", "12"))
 RESEARCH_MAX_SEARCH_RESULTS = int(os.getenv("RESEARCH_MAX_SEARCH_RESULTS", "8"))
-RESEARCH_MAX_SOURCES = int(os.getenv("RESEARCH_MAX_SOURCES", "4"))
+RESEARCH_MAX_SOURCES = int(os.getenv("RESEARCH_MAX_SOURCES", "6"))
 RESEARCH_MIN_SOURCES = int(os.getenv("RESEARCH_MIN_SOURCES", "2"))
 RESEARCH_MAX_SOURCE_CHARS = int(os.getenv("RESEARCH_MAX_SOURCE_CHARS", "4000"))
 RESEARCH_MAX_RESPONSE_BYTES = int(os.getenv("RESEARCH_MAX_RESPONSE_BYTES", "1000000"))
@@ -50,6 +50,15 @@ ASR_MODEL = os.getenv(
 ASR_DEVICE = os.getenv("ASR_DEVICE", "cpu")
 ASR_COMPUTE_TYPE = os.getenv("ASR_COMPUTE_TYPE", "int8")
 ASR_LANGUAGE = os.getenv("ASR_LANGUAGE", "zh")
+
+# 天气（和风天气 QWeather 免费版，https://dev.qweather.com 注册获取 Key）
+WEATHER_ENABLED = os.getenv("WEATHER_ENABLED", "true").lower() == "true"
+WEATHER_API_KEY = os.getenv("WEATHER_API_KEY", "")
+WEATHER_API_BASE = os.getenv(
+    "WEATHER_API_BASE", "https://devapi.qweather.com/v7"
+)
+WEATHER_TIMEOUT_SECONDS = float(os.getenv("WEATHER_TIMEOUT_SECONDS", "8"))
+WEATHER_DEFAULT_CITY = os.getenv("WEATHER_DEFAULT_CITY", "").strip()
 
 PORT = int(os.getenv("PORT", "8000"))
 
