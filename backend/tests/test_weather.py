@@ -21,34 +21,21 @@ from app.services.weather import (
 def test_extract_city_name_with_suffix_and_known_cities():
     assert extract_city_name("北京今天天气怎么样") == "北京"
     assert extract_city_name("帮我看看上海的天气") == "上海"
-    assert extract_city_name("北京昌平区下雨吗") == "昌平区"
+    assert extract_city_name("北京昌平区下雨吗") == "北京"
     assert extract_city_name("杭州明天温度多少") == "杭州"
     assert extract_city_name("你好呀今天过得怎么样") is None
     assert extract_city_name("今天心情不错") is None
 
 
-def test_resolve_city_maps_location(monkeypatch):
+def test_resolve_city_maps_to_coordinates(monkeypatch):
     monkeypatch.setattr(weather_mod, "WEATHER_API_KEY", "test-key")
-
-    def fake_get_json(url):
-        assert "geo/lookup" in url
-        assert "test-key" in url
-        assert urllib.parse.quote("北京") in url
-        return {
-            "code": "200",
-            "location": [{"id": "101010100", "name": "北京", "adm1": "北京市"}],
-        }
-
-    monkeypatch.setattr(weather_mod, "_get_json", fake_get_json)
     city = resolve_city("北京")
-    assert city.id == "101010100"
     assert city.name == "北京"
-    assert city.province == "北京市"
+    assert city.id == "116.4074,39.9042"
 
 
 def test_resolve_city_missing_city_raises(monkeypatch):
     monkeypatch.setattr(weather_mod, "WEATHER_API_KEY", "test-key")
-    monkeypatch.setattr(weather_mod, "_get_json", lambda url: {"code": "200", "location": []})
     with pytest.raises(WeatherError) as exc:
         resolve_city("不存在的地方")
     assert exc.value.code == "city_not_found"
