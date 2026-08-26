@@ -112,6 +112,15 @@ export class VoiceResponseController {
     this.clear()
   }
 
+  /** 重播一段文本：停掉当前播放，以一个独立 requestId 重新入队。 */
+  replay(text: string) {
+    this.cancel()
+    this.requestId = 'replay'
+    this.replyFinished = true
+    this.callbacks.onWaiting(this.requestId)
+    this.append(text, true)
+  }
+
   private append(text: string, flush: boolean) {
     this.pendingText += text
     const split = splitSpeakableText(this.pendingText, flush)

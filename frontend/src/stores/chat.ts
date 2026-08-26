@@ -98,6 +98,13 @@ export interface EmotionState {
   strategy_scores?: Record<string, number>
 }
 
+export interface ShixuEmotion {
+  emotion: string
+  intensity: number
+  cause: string
+  subtitle_color: string
+}
+
 export type ConnectionStatus = 'connecting' | 'online' | 'reconnecting' | 'offline'
 export type ChatReplyOrigin = 'text' | 'voice'
 
@@ -140,6 +147,8 @@ export const useChatStore = defineStore('chat', () => {
   const currentMask = ref('daily_companion')
   const currentReplyMode = ref('catch_up')
   const currentEmotion = ref<EmotionState>({ ...DEFAULT_EMOTION })
+  const shixuEmotion = ref<ShixuEmotion | null>(null)
+  const quickReact = ref<string | null>(null)
   const lastError = ref('')
   const isStreaming = computed(() => messages.value.some((m) => m.streaming))
   const isReplyPending = ref(false)
@@ -227,6 +236,8 @@ export const useChatStore = defineStore('chat', () => {
     currentMask.value = 'daily_companion'
     currentReplyMode.value = 'catch_up'
     currentEmotion.value = { ...DEFAULT_EMOTION }
+    shixuEmotion.value = null
+    quickReact.value = null
   }
 
   function ensureStreamingAssistantMessage() {
@@ -292,6 +303,7 @@ export const useChatStore = defineStore('chat', () => {
         return
       }
       if (data.type === 'chunk') {
+        if (quickReact.value) quickReact.value = null
         const last = ensureStreamingAssistantMessage()
         last.content += data.content
         if (activeReply) emitReply({ type: 'chunk', ...activeReply, content: data.content })
@@ -364,6 +376,8 @@ export const useChatStore = defineStore('chat', () => {
         last.media.status = status
         if (data.message) last.media.message = data.message
         if (data.code) last.media.code = data.code
+      } else if (data.type === 'quick_react') {
+        quickReact.value = data.content || null
       } else if (data.type === 'done') {
         const last = messages.value[messages.value.length - 1]
         if (last?.streaming) last.streaming = false
@@ -374,6 +388,7 @@ export const useChatStore = defineStore('chat', () => {
         if (data.mask) currentMask.value = data.mask
         if (data.reply_mode) currentReplyMode.value = data.reply_mode
         if (data.emotion_state) currentEmotion.value = data.emotion_state
+        if (data.shixu_emotion) shixuEmotion.value = data.shixu_emotion
         completeActiveReply('done')
         loadTasks()
         flushPendingVoiceMessages()
@@ -629,6 +644,8 @@ export const useChatStore = defineStore('chat', () => {
     currentMask,
     currentReplyMode,
     currentEmotion,
+    shixuEmotion,
+    quickReact,
     lastError,
     isStreaming,
     isReplyPending,

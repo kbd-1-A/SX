@@ -107,6 +107,12 @@ async function rateMessage(message: ChatMessage, rating: 'positive' | 'negative'
           >
             {{ statusNames[chat.status] || '离线' }}
           </n-tag>
+          <span
+            v-if="chat.shixuEmotion && chat.shixuEmotion.intensity > 0"
+            class="emotion-dot"
+            :style="{ background: chat.shixuEmotion.subtitle_color }"
+            :title="`${chat.shixuEmotion.emotion} · 强度 ${chat.shixuEmotion.intensity}`"
+          />
         </div>
         <RealtimeFoundationPanel />
       </div>
@@ -286,6 +292,14 @@ async function rateMessage(message: ChatMessage, rating: 'positive' | 'negative'
 .chat-header {
   flex: 0 0 auto;
   padding: 12px 24px;
+}
+.emotion-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  box-shadow: 0 0 6px currentColor;
+  transition: background 0.4s ease;
 }
 
 .message-list {

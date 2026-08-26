@@ -19,10 +19,12 @@ from starlette.websockets import WebSocketState
 
 from app.agents.action_guard import detect_action_request, guard_action_reply
 from app.agents.emotion import adjust_reply_mode, detect_emotion_state
+from app.agents.emotion_tag import EmotionStreamFilter
 from app.agents.errors import AgentError, AgentEmptyResponseError
 from app.agents.mask import DEFAULT_MASK
 from app.agents.reply_mode import detect_reply_mode
-from app.agents.router import choose_mask, stream_reply
+from app.agents.router import analyze_reply_emotion, choose_mask, stream_reply
+from app.memory import inner_world
 from app.config import MAX_USER_MESSAGE_CHARS
 from app.memory.anchors import add_anchors_from_text
 from app.memory.behavior import observe_behavior
@@ -35,6 +37,7 @@ from app.memory.observations import (
 )
 from app.memory.self import add_mask_milestone
 from app.memory.store import add_message, get_or_create_session
+from app.agents.quick_react import pick_quick_react
 from app.services.weather import (
     WeatherError,
     default_city,
@@ -322,6 +325,7 @@ async def ws_chat(ws: WebSocket) -> None:
             add_anchors_from_text(content, user_id)
             observe_behavior(content, user_id)
             create_follow_ups_from_text(content, user_id)
+            inner_world.decay_current()
             # P2 隐式反馈：紧接着上一条回复继续聊 → 正向续聊信号；并消费未处理的中断信号
             record_continuation_signal(session_id)
             apply_implicit_learning()
@@ -359,6 +363,7 @@ async def ws_chat(ws: WebSocket) -> None:
 
         full: list[str] = []
         chunk_count = 0
+        emo_filter: EmotionStreamFilter | None = None
         try:
             research_result: ResearchResult | None = None
             research_error: ResearchError | None = None
@@ -490,7 +495,7 @@ async def ws_chat(ws: WebSocket) -> None:
                             )
                         )
                     else:
-                        weather_full: list[str] = []
+                        emo_filter = EmotionStreamFilter()
                         async for chunk in stream_reply(
                             session_id,
                             content,
@@ -501,13 +506,21 @@ async def ws_chat(ws: WebSocket) -> None:
                         ):
                             if not chunk:
                                 continue
-                            weather_full.append(chunk)
+                            filtered = emo_filter.feed(chunk)
+                            if filtered:
+                                await ws.send_text(
+                                    json.dumps(
+                                        {"type": "chunk", "content": filtered}, ensure_ascii=False
+                                    )
+                                )
+                        remaining = emo_filter.flush()
+                        if remaining:
                             await ws.send_text(
                                 json.dumps(
-                                    {"type": "chunk", "content": chunk}, ensure_ascii=False
+                                    {"type": "chunk", "content": remaining}, ensure_ascii=False
                                 )
                             )
-                        reply = "".join(weather_full).strip()
+                        reply = emo_filter.clean_text
                         if not reply:
                             raise AgentEmptyResponseError()
                 assistant_id = add_message(session_id, "assistant", reply)
@@ -570,6 +583,13 @@ async def ws_chat(ws: WebSocket) -> None:
                 )
                 assistant_id = add_message(session_id, "assistant", reply)
             else:
+                if action_kind is None:
+                    qr = pick_quick_react()
+                    if qr:
+                        await ws.send_text(
+                            json.dumps({"type": "quick_react", "content": qr}, ensure_ascii=False)
+                        )
+                emo_filter = EmotionStreamFilter()
                 async for chunk in stream_reply(
                     session_id,
                     content,
@@ -582,14 +602,24 @@ async def ws_chat(ws: WebSocket) -> None:
                 ):
                     if not chunk:
                         continue
-                    full.append(chunk)
                     chunk_count += 1
-                    if action_kind is None:
+                    filtered = emo_filter.feed(chunk)
+                    if filtered:
+                        full.append(filtered)
+                    if action_kind is None and filtered:
                         await ws.send_text(
-                            json.dumps({"type": "chunk", "content": chunk}, ensure_ascii=False)
+                            json.dumps({"type": "chunk", "content": filtered}, ensure_ascii=False)
                         )
 
-                reply = "".join(full).strip()
+                remaining = emo_filter.flush()
+                if remaining:
+                    full.append(remaining)
+                    if action_kind is None:
+                        await ws.send_text(
+                            json.dumps({"type": "chunk", "content": remaining}, ensure_ascii=False)
+                        )
+
+                reply = emo_filter.clean_text
                 if not reply:
                     raise AgentEmptyResponseError()
 
@@ -761,6 +791,38 @@ async def ws_chat(ws: WebSocket) -> None:
                 break
             continue
 
+        shixu_emotion: dict | None = None
+        try:
+            parsed = emo_filter.emotion if emo_filter else None
+            if parsed is None and emo_filter is not None:
+                prev_state = inner_world.get_current()
+                parsed = await analyze_reply_emotion(
+                    content, reply,
+                    prev_emotion=prev_state.emotion,
+                    prev_streak=prev_state.streak,
+                )
+            if parsed:
+                state = inner_world.record_emotion(
+                    emotion=parsed["emotion"],
+                    intensity=parsed["intensity"],
+                    cause=parsed["cause"],
+                    source_message_id=assistant_id,
+                )
+            else:
+                state = inner_world.get_current()
+            shixu_emotion = {
+                "emotion": state.emotion,
+                "intensity": state.intensity,
+                "cause": state.cause,
+                "subtitle_color": inner_world.get_subtitle_color(state.emotion),
+            }
+        except Exception:
+            logger.exception(
+                "chat_emotion_record_failed request_id=%s session_id=%s",
+                request_id,
+                session_id,
+            )
+
         try:
             record_turn(
                 session_id=session_id,
@@ -798,6 +860,7 @@ async def ws_chat(ws: WebSocket) -> None:
                         "mask": mask,
                         "reply_mode": reply_mode,
                         "emotion_state": emotion_state,
+                        "shixu_emotion": shixu_emotion,
                     },
                     ensure_ascii=False,
                 )
@@ -812,7 +875,7 @@ async def ws_chat(ws: WebSocket) -> None:
 
         logger.info(
             "chat_completed request_id=%s session_id=%s mask=%s reply_mode=%s "
-            "chunks=%s response_chars=%s elapsed_ms=%s",
+            "chunks=%s response_chars=%s elapsed_ms=%s shixu_emotion=%s",
             request_id,
             session_id,
             mask,
@@ -820,4 +883,5 @@ async def ws_chat(ws: WebSocket) -> None:
             chunk_count,
             len(reply),
             round((perf_counter() - started_at) * 1000),
+            shixu_emotion.get("emotion") if shixu_emotion else "unknown",
         )

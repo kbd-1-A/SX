@@ -28,8 +28,14 @@ def load_mask(mask: str | None) -> str | None:
 
 
 def load_persona(mask: str | None = None) -> str:
-    """核心 + 命中面具，拼成完整 system prompt。"""
+    """核心 + 当前情绪状态 + 命中面具，拼成完整 system prompt。"""
+    from app.memory import inner_world
+
     parts = [load_core()]
+    # 当前情绪状态（持续，进记忆）：让 LLM 带着情绪说话
+    emotion_block = inner_world.format_for_persona()
+    if emotion_block:
+        parts.append("# 当前情绪状态\n\n" + emotion_block)
     mask_text = load_mask(mask)
     if mask_text:
         parts.append("# 本次对话的面具\n\n" + mask_text)

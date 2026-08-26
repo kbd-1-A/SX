@@ -10,10 +10,12 @@
  */
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { MicrophoneCapture } from '../audio/capture'
+import { BrowserSpeechOutput } from '../audio/speechSynthesis'
 import { VoiceProtocolClient } from '../audio/voiceClient'
 import { VoiceResponseController } from '../audio/voiceResponse'
 import { useAgentStateStore } from '../stores/agentState'
 import { useChatStore } from '../stores/chat'
+import { useVoiceSettingsStore } from '../stores/voiceSettings'
 import type { VoiceServerEvent } from '../types/agentEvents'
 
 export type TranscriptionStatus = 'idle' | 'listening' | 'processing' | 'error'
@@ -21,6 +23,7 @@ export type TranscriptionStatus = 'idle' | 'listening' | 'processing' | 'error'
 export function useVoiceConversation() {
   const agent = useAgentStateStore()
   const chat = useChatStore()
+  const voiceSettings = useVoiceSettingsStore()
 
   const captureError = ref('')
   const lastTranscript = ref('')
@@ -31,11 +34,38 @@ export function useVoiceConversation() {
   let capture: MicrophoneCapture | null = null
   let unsubscribeReply: (() => void) | null = null
 
-  const voiceResponse = new VoiceResponseController({
-    onWaiting: (requestId) => agent.transitionLocal('thinking', requestId, 'neutral', true),
-    onPlaybackStart: (requestId) => agent.transitionLocal('speaking', requestId, 'warm', true),
-    onPlaybackComplete: (requestId) => agent.transitionLocal('idle', requestId, 'neutral', true),
-  })
+  const output = new BrowserSpeechOutput(() => ({
+    rate: voiceSettings.rate,
+    pitch: voiceSettings.pitch,
+    voiceURI: voiceSettings.voiceURI,
+    muted: voiceSettings.shouldMute,
+  }))
+
+  const voiceResponse = new VoiceResponseController(
+    {
+      onWaiting: (requestId) => agent.transitionLocal('thinking', requestId, 'neutral', true),
+      onPlaybackStart: (requestId) => agent.transitionLocal('speaking', requestId, 'warm', true),
+      onPlaybackComplete: (requestId) => agent.transitionLocal('idle', requestId, 'neutral', true),
+    },
+    output,
+  )
+
+  /** 重播最近一条助手回复（用当前语音设置朗读，受静音规则约束） */
+  function replayLastReply(): boolean {
+    for (let i = chat.messages.length - 1; i >= 0; i -= 1) {
+      const msg = chat.messages[i]
+      if (msg.role === 'assistant' && msg.content && msg.content.trim()) {
+        voiceResponse.replay(msg.content.trim())
+        return true
+      }
+    }
+    return false
+  }
+
+  /** 用当前语音设置试听一句示例 */
+  function previewVoice() {
+    voiceResponse.replay('时叙在这里，这是当前的语音效果。')
+  }
 
   const capturing = computed(() => agent.captureActive)
   /** 转写处理中（此时不能开始新采集） */
@@ -195,5 +225,7 @@ export function useVoiceConversation() {
     startCapture,
     stopCapture,
     toggleCapture,
+    replayLastReply,
+    previewVoice,
   }
 }

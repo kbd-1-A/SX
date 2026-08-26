@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS user_profile (
     self_memory TEXT DEFAULT '{}',    -- JSON {milestones/nicknames/relationship_phase/...}
     behavior_profile TEXT DEFAULT '{}', -- JSON：性格倾向、表达习惯、证据与置信度
     companion_settings TEXT DEFAULT '{}', -- JSON：主动陪伴频率等用户控制项
+    emotion_state TEXT DEFAULT '{}',      -- JSON：时叙当前情绪状态（持续，进记忆）
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -137,3 +138,16 @@ CREATE TABLE IF NOT EXISTS implicit_feedback (
 
 CREATE INDEX IF NOT EXISTS idx_implicit_feedback_unapplied
 ON implicit_feedback(applied, signal);
+
+-- 持续情绪事件历史（append-only，可追溯）：会记仇/记喜的依据
+CREATE TABLE IF NOT EXISTS emotion_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    emotion TEXT NOT NULL,                -- 温柔/生气/嗔怪...（见 emotion_map.yaml）
+    intensity REAL NOT NULL,              -- 0.0-1.0
+    cause TEXT DEFAULT '',                -- 起因
+    source_message_id INTEGER REFERENCES messages(id),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_emotion_log_created
+ON emotion_log(created_at DESC);

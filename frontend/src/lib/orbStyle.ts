@@ -125,3 +125,30 @@ export function getOrbStyle(mask: string, emotion = 'neutral', intensity = 0): O
     size: clamp(lerpMultiplier(base.size, mod.size ?? 1, factor), 0.5, 1.5),
   }
 }
+
+/**
+ * 语音预设对粒子球的运动调制。
+ *
+ * 设计：预设定「整体节奏氛围」，在情绪调制之上叠加——
+ * 温柔变慢变柔、活泼变快变活、沉稳稍慢，日常不影响。
+ * 与 emotion 叠加是乘法关系（都已是倍率），结果再 clamp 到合法区间。
+ */
+const VOICE_PRESET_MODS: Record<string, MotionMod> = {
+  daily: {},
+  gentle: { speed: 0.7, breathe: 0.85, noiseAmp: 0.8, noiseSpeed: 0.75 },
+  lively: { speed: 1.3, breathe: 1.2, noiseAmp: 1.2, noiseSpeed: 1.25 },
+  calm: { speed: 0.85, noiseSpeed: 0.85, breathe: 0.9 },
+}
+
+export function applyVoicePreset(style: OrbStyle, preset: string): OrbStyle {
+  const mod = VOICE_PRESET_MODS[preset] ?? VOICE_PRESET_MODS.daily
+  if (!mod || Object.keys(mod).length === 0) return { ...style }
+  return {
+    ...style,
+    noiseAmp: clamp(style.noiseAmp * (mod.noiseAmp ?? 1), 0.02, 0.5),
+    noiseSpeed: clamp(style.noiseSpeed * (mod.noiseSpeed ?? 1), 0.1, 2),
+    breathe: clamp(style.breathe * (mod.breathe ?? 1), 0.1, 1),
+    speed: clamp(style.speed * (mod.speed ?? 1), 0.2, 2),
+    size: style.size,
+  }
+}

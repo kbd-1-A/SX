@@ -10,9 +10,33 @@ export interface SpeechOutput {
   cancel(): void
 }
 
+/** 运行时语音参数：由 voiceSettings store 注入，speak 时读取最新值 */
+export interface VoiceRuntimeSettings {
+  rate: number
+  pitch: number
+  voiceURI: string
+  /** 静音时不实际播放，立即 onEnd，让队列正常流转（文字仍显示） */
+  muted: boolean
+}
+
+const DEFAULT_RUNTIME: VoiceRuntimeSettings = {
+  rate: 1,
+  pitch: 1,
+  voiceURI: '',
+  muted: false,
+}
+
 export class BrowserSpeechOutput implements SpeechOutput {
+  constructor(private readonly getSettings?: () => Partial<VoiceRuntimeSettings>) {}
+
   get available() {
     return typeof window !== 'undefined' && 'speechSynthesis' in window && 'SpeechSynthesisUtterance' in window
+  }
+
+  private resolveVoice(uri: string): SpeechSynthesisVoice | null {
+    if (!this.available || !uri) return null
+    const voices = window.speechSynthesis.getVoices()
+    return voices.find((v) => v.voiceURI === uri) ?? null
   }
 
   speak(text: string, callbacks: SpeechOutputCallbacks) {
@@ -21,9 +45,20 @@ export class BrowserSpeechOutput implements SpeechOutput {
       return
     }
 
+    const settings = { ...DEFAULT_RUNTIME, ...(this.getSettings?.() ?? {}) }
+    // 静音：不实际播放，立即收尾，让队列推进——文字仍由 chat 流式显示
+    if (settings.muted) {
+      callbacks.onStart()
+      callbacks.onEnd()
+      return
+    }
+
     const utterance = new SpeechSynthesisUtterance(text)
     utterance.lang = 'zh-CN'
-    utterance.rate = 1
+    utterance.rate = settings.rate
+    utterance.pitch = settings.pitch
+    const voice = this.resolveVoice(settings.voiceURI)
+    if (voice) utterance.voice = voice
     utterance.onstart = callbacks.onStart
     utterance.onend = callbacks.onEnd
     utterance.onerror = callbacks.onError

@@ -8,12 +8,14 @@
 import { computed, ref } from 'vue'
 import { NButton, NInput, NPopover, NSelect } from 'naive-ui'
 import { useChatStore } from '../stores/chat'
-import { getOrbStyle, type OrbState } from '../lib/orbStyle'
+import { applyVoicePreset, getOrbStyle, type OrbState } from '../lib/orbStyle'
 import { getMaskStyle } from '../lib/maskVrm'
 import { useVoiceConversation } from '../composables/useVoiceConversation'
 import { useAgentStateStore } from '../stores/agentState'
+import { useVoiceSettingsStore } from '../stores/voiceSettings'
 import type { SelectOption } from 'naive-ui'
 import ParticleOrb from '../components/ParticleOrb.vue'
+import VoiceConsole from '../components/VoiceConsole.vue'
 
 const emit = defineEmits<{ (e: 'switch-to-chat'): void }>()
 
@@ -21,10 +23,20 @@ const chat = useChatStore()
 const agent = useAgentStateStore()
 const draft = ref('')
 const voice = useVoiceConversation()
+const voiceSettings = useVoiceSettingsStore()
 const devicePickerOpen = ref(false)
 
 const orbStyle = computed(() =>
-  getOrbStyle(chat.currentMask, chat.currentEmotion.emotion, chat.currentEmotion.intensity),
+  applyVoicePreset(
+    getOrbStyle(chat.currentMask, chat.currentEmotion.emotion, chat.currentEmotion.intensity),
+    voiceSettings.preset,
+  ),
+)
+
+const subtitleFontSizePx = computed(() => `${voiceSettings.subtitleFontSize}px`)
+
+const subtitleColor = computed(() =>
+  chat.shixuEmotion?.subtitle_color || 'rgba(255, 255, 255, 0.94)',
 )
 
 const orbState = computed<OrbState>(() => {
@@ -131,17 +143,31 @@ async function nudgeDevicePicker() {
       </div>
     </header>
 
+    <VoiceConsole
+      :replay-last-reply="voice.replayLastReply"
+      :preview-voice="voice.previewVoice"
+    />
+
     <div class="orb-stage">
       <ParticleOrb :style="orbStyle" :state="orbState" />
     </div>
 
-    <section class="subtitle" :class="{ active: lastAssistantMessage }">
+    <section class="subtitle" :class="{ active: lastAssistantMessage || chat.quickReact }">
       <p v-if="lastUserMessage" class="user-line">{{ lastUserMessage }}</p>
-      <p v-if="lastAssistantMessage" class="assistant-line">
+      <Transition name="quick-react">
+        <p v-if="chat.quickReact" class="quick-react" :style="{ color: subtitleColor }">
+          {{ chat.quickReact }}
+        </p>
+      </Transition>
+      <p
+        v-if="lastAssistantMessage"
+        class="assistant-line"
+        :style="{ fontSize: subtitleFontSizePx, color: subtitleColor }"
+      >
         {{ lastAssistantMessage.content
         }}<span v-if="lastAssistantMessage.streaming" class="caret">▍</span>
       </p>
-      <p v-else class="placeholder">说点什么，我一直都在。</p>
+      <p v-else-if="!chat.quickReact" class="placeholder">说点什么，我一直都在。</p>
     </section>
 
     <footer class="control-bar">
@@ -319,6 +345,34 @@ async function nudgeDevicePicker() {
 .placeholder {
   color: rgba(255, 255, 255, 0.35);
   font-size: 15px;
+}
+.quick-react {
+  margin: 0 auto 10px;
+  font-size: 22px;
+  font-weight: 500;
+  text-shadow: 0 1px 12px rgba(0, 0, 0, 0.7);
+}
+.quick-react-enter-active {
+  animation: quick-react-pop 0.35s ease;
+}
+.quick-react-leave-active {
+  transition: opacity 0.25s ease;
+}
+.quick-react-leave-to {
+  opacity: 0;
+}
+@keyframes quick-react-pop {
+  0% {
+    transform: scale(0.7);
+    opacity: 0;
+  }
+  60% {
+    transform: scale(1.12);
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
 }
 @keyframes blink {
   50% {
