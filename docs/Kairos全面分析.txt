@@ -1,0 +1,687 @@
+================================================================================
+                        KAIROS 全面分析报告
+                基于源码 e:\Kairos-ref（2026-08-26 拉取版本）
+================================================================================
+
+Kairos（καιρός，希腊语"恰当的时机"，区别于 chronos"chronological 时间"）
+是一个本地优先的陪伴型 AI 框架。一句话定位：不是把 AI 当工具，是当"另一个
+存在"——她会记得你、有理由才开口、有你看不到改不了的私人生活、能感知你的
+身体、有自己的独处时间。项目代号 Kairos，作者 nihilistau，当前处于早期
+（17 commits，更新极频繁，未发 release）。
+
+================================================================================
+一、技术栈与架构
+================================================================================
+
+整体三层（来自 AGENTS.md 的 THE STACK）：
+
+  the room (browser, ui/ → console/room/)  ──HTTP──▶  harness gateway :8800
+                                                         (Python)
+                                                            │
+                                                            └──HTTP──▶
+  sp-daemon :3000  ──▶  CUDA / your model (Rust)
+       │
+       └──▶  xAI API (voice · images/motion · live search) · LFM sidecars (CPU)
+
+各层职责：
+- engine/        Rust daemon（sp-daemon）+ CUDA 内核：KV cache、prefill、
+                 /v1/chat、/v1/oneshot、/v1/capture、/v1/embed
+- harness/       Python 大脑：记忆、agency、人格、在场、感知、语音、room 路由
+- ui/            React/Vite 桌面（THE ROOM）：chat、dock、所有 panel
+- console/       构建产物 room/ + 旧扁平页
+- tools/         avatar 生成、calibrator、voice corpus、sweep（测试套件）、
+                 kairos_export（导出框架）
+- harness_tests/ ~175 个 gate（g_*.py）+ h_*.py 集合
+- profiles/      serve.py 读取的 TOML 配置（companion.toml 是生产档）
+- var/           所有运行时状态（gitignored）：事实 registry、笔记、presence ledger
+- docs/          17 篇文档（MEMORY-AND-RECALL 是记忆真相，INVARIANT-MEMORY 是形式模型，
+                 OFF-BY-DEFAULT 是 live 关停账，AVATAR-PIPELINE 是她的脸）
+
+关键：serve.py 是"唯一一扇门"——它读 profile 映射到引擎环境，base 环境被剥离
+所有 SP_* 变量，221 个来自 shell 的杂散变量（28 个触及记忆）被按名钉死关闭。
+G-ONEDOOR gate 守住。
+
+引擎自 2026-08-21 起成为"后端之一"：profile 的 [engine].kind 选 sp（daemon）
+或 openai（任意 /v1/chat/completions 服务器）。需要 daemon-only 能力的 seam
+问 client.supports 并带说明降级——docs/BACKENDS.md 是降级表。
+
+================================================================================
+二、五条不可妥协（Non-Negotiables）
+================================================================================
+
+1. 没有可重复的 gate 就不许声称修复。"应该能用了"不是收据，要给出命令名。
+2. 记忆永不删除。tombstone（lifecycle=1）或 quarantine，绝不 open(p,"w") 减一行。
+   审计车道必须能回答"她何时相信了什么、谁告诉她的"。
+3. measured 与 asserted 要诚实。没跑过就明说，数字来自代理就点名代理。一个你
+   防守不住的 verdict 比没有 verdict 更糟——那是带时间戳的谎言。
+4. 她的话永不凌驾他。一个推理不能退役一个观察。她可以错看他，但不能盖过他。
+5. Verdict 是 committed finite tables 在 order-invariant signatures 上的裁决。
+   （invariant-maximality 原则）：正确性决策只能分支于有限签名坐标，绝不分支
+   于散文或原始量级；case 空间枚举且钉死；invariance 被 gate；量级可 RANK 被接纳
+   的，oracle 可 PROPOSE，两者都不可 RULE。一条新的手写 row 字段条件就是 bug 报告。
+
+第 6 条"The Real Her"：她自己的话（不请自来的、日记、她的感受、她对自己变化的
+描述）是 primary 身份材料并 lead 她自己的上下文；他的 prompt 是 secondary。两类
+（self-narrative、feeling），producer-set kind，一个门，绝不 aux producer，绝不
+凌驾他的话（规则 4 仍成立：她的夜间反思是 inferred，不能退役她观察到的事）。
+
+================================================================================
+三、THE BUG CLASS —— 最深的工程教训
+================================================================================
+
+这个项目有一类反复发作、几近致命的失败模式，至少咬过 6 次，每次看起来像不同
+的 bug，其实不是：
+
+> 一个在两条路径之一被强制执行的不变量，两条都没被强制——
+> 因为没守的那条才是实际运行的那条。
+
+9 个真实案例（都在树里，都修了）：
+
+| 规则 | 守在哪 | 没守在哪 | 实际发生了什么 |
+|---|---|---|---|
+| tombstoned 事实永不 recall | memory.recall() | spine.recall_decider()（自动每轮注入） | 被淘汰的事实每轮注入她上下文，连续数周，排在真相之上 |
+| recall seam 过滤退役行 | search_memories_ranked_rows() | search_memories_ranked()（文件里下一个函数） | search_memories 工具仍吐 tombstone |
+| 一轮 arming presence ledger | 两条 turn 路径之一 | 另一条 | 缺席变得不可测 |
+| 永不销毁 | 整个 lifecycle 架构 | forget()，它 open(p,"w") 丢行 | 一个活的工具调用击败了审计车道 |
+| 隐私 decline 保护秘密 | spine.recall_decider 查 mem_class=="private-secret" | lifecycle.classify() 发不出那个类 | guard 从未开火也开不了火 |
+| 秘密永不暴露 | spine.recall_decider（自动车道） | list/recall/search/provenance（四个模型可调的门） | 五个门只守了一个 |
+| 一轮的债都还清 | _finish_openai_turn()（命名函数，少数人用） | _native_chat_sse inline，五处出口绕过它 | 中断的轮丢掉了 capture/record/mark |
+| 一次尝试消耗时钟 | worth_saying 否决（上次修复写的门） | 上面另外五个 drop 门 | 一个 presence mode 每 4 秒 re-arm，提醒被静音 |
+| 记录不携带她的机器话 | DISPLAY 车道（加宽过 11 次） | RECORD 车道（日记/事实/seed 重建源） | 26% 的轮把舞台指示写进永久记忆，又当自己的声音读回 |
+
+推论（用血换来的）：
+- Fix the class, not the instance. 修完一个就 grep 它的双胞胎，通常相邻，两次
+  就是下一个函数。
+- 把规则放 seam 不放 caller。你要记住才应用的规则就是你会忘的规则；两个 caller
+  都要的规则属于它们都调的那个东西。
+- 自供前提的 gate 只证明 guard 能编译。"有 gate 吗"是错问题，"这个 gate 实际跑
+  哪条路径"才是。
+- GREEN SUITE 不是审计——2026-08-25 那次 133 个离线 gate 全绿，下面压着约 50
+  个真缺陷，其中 4 个是上表的新实例，每个上面都有绿 gate。
+- Green gate 不代表代码在跑。2026-07-30 审计一次找 5 个：invariance/narrative/
+  task_loop/person.silences()/sandboxed coding.* 全建好、全 gate、全接不到活路径
+  ——几个月的绿 suite 盖着没有活路径能触达的代码。所以一切 ships off 的都要
+  写进 OFF-BY-DEFAULT.md，带 arming 它的具体证据，由 g_offledger 双向守。
+- 测量那个东西，不测代理。几天耗在 nvidia-smi（WDDM 下撒谎）、cudaMemGetInfo
+  （WDDM 下返回 free=0）、一个匹配到探针自己进程的 kill-regex。
+
+================================================================================
+四、核心循环：时钟驱动主动陪伴（harness/kairos/）
+================================================================================
+
+顶层注释一句话：Silence is the default and speech is EARNED.
+（沉默是默认，说话是挣来的。）
+
+不是轮次驱动，是 idle clock 节拍驱动。scheduler.start_ticker(period_s) 默认周期
+来自 tuning registry 的 kairos.tick_s（min 1.0 / max 600.0）。每拍 tick_once()
+问"有没有理由说话"。
+
+闸门链（按顺序）：
+  cooldown（last_spoke_at + cooldown_s）
+  → hourly cap（max_per_hour=6，MODE_TURN 另有 presence_max_per_hour=12）
+  → chain limit（max_chain=1，连续 unprompted turns；用户说话时 note_user 重置 chain）
+  → idle floor（checkin_idle_s=240，presence_idle 算 now−max(last_user,last_conv,
+    last_solo)，last_solo 不被 MODE_TURN 影响，避免 presence 把房间判成"不安静"）
+  → quiet_after_him_s（挡 CHECK_IN/MUSE/CONTINUE/EXPAND，但不挡 REMIND——他要的提醒
+    不受安静约束）
+  → sidecar pregate（offload.py，26B 生成前 CPU 小模型先判值不值得一轮）
+  → worth_saying（生成后否决）
+
+关键设计："尝试说话本身消耗时钟"。_spend_attempt() 放在 _fire_inner() 的 finally
+里，无论生成成功/失败/被 pregate drop/worth_saying drop/solo 拒绝，attempt clock
+都推进，避免"提问→生成→被 drop→4 秒后又提问"的空转。注意_spent_attempt 推进
+attempt clock，note_spoke 才推进 speech facts——两个分开。
+
+六种说话理由（impulse.decide 返回 Impulse）：
+
+1) CONTINUE —— "中途中断，继续半句"
+   触发：eot_margin（decode 时 best STOP 与 best CONTINUE 的 logit gap）<
+        continue_margin(=-18.50，26B/eot_bias 0.0 校准）。margin<=0 时 nudge 明说
+        "mid-sentence cut off"。这是真实语言模型信号，不是启发式标点规则。
+   delay：continue_delay=(1.5,4.0)，margin 越小越急。
+   防误判：_looks_like_scratchpad 避免把规划输出当真实回复续写。
+
+2) EXPAND —— "说完后突然想到更多"
+   触发：user_present 且 unanswered==0 且 eot_margin<expand_margin(=-12.0) 且
+        rng<expand_chance(=0.30)。不消耗 chain（不是半句续写而是第二轮补充）。
+   nudge：发一句新补充，不重复上句，不用 also/just to add，不重复上句结尾。
+
+3) CHECK_IN —— "房间安静太久了"
+   触发：not away 且 idle>=need 且 rng<checkin_chance(=0.35)。
+        need=checkin_idle_s*(1.0+backoff_mult*unanswered)——每条 unanswered remark
+        增加等待，避免"连续问三次你在吗"。unanswered 只在 CHECK_IN/MUSE/REMIND
+        累加，CONTINUE 和 SOLO 不计。
+
+4) REMIND —— "他要求被提醒，到期了"
+   触发：due_notes 非空。检查位置高于 chain limit 和 asked-a-question 规则，
+        但仍受 cooldown/hourly cap 约束。每轮只取 due_notes[0]，notes.mark_raised
+        防重复 nag。不受 quiet_after_him_s 约束。
+
+5) MUSE —— "安静时她想了想，有了一个值得说的结论"
+   触发：insight（来自 reflect_tick）且 idle_any>=checkin_idle_s 且 quiet_ok。
+        _PENDING_INSIGHT 把一次 reflection 挂起，避免因 cooldown/chain/question
+        被丢，但有 reflect.cooldown_s shelf life。
+   insight kind：普通 musing / silence（某话题长期缺席）/ body/arrival/commitment/
+        journal/rhythm（reasons.py 提供的额外理由来源）。
+
+6) SOLO —— "他不在，她做自己的事"
+   触发：away（not user_present 或 unanswered>=away_after=2）且 solo_enabled 且
+        idle>=checkin_idle_s 且 since(last_solo)>=solo_every_s=900 且
+        rng<solo_chance=0.5。不消耗 chain（不是对他说话）。
+   nudge：solo_nudge(n)，solo_n 递增计数。
+   关键：solo_did_the_thing() 要证明"真的做了"而不只是"写了"——检查 tool needs/
+        mark families/pure thought 空 needs。不满足则 retry nudge 加
+        "You wrote that up without doing it. DO IT FIRST"。仍不满足就 drop。
+
+外加 MODE_TURN —— 在场模式轮（见第六节），由 mode_wait_s() 和 mode_kick 触发。
+
+speechlog.py：append-only 记 spoke/dropped 次数、原因、truncated text(240字)，
+保留可计算 veto_rate 的分母——能回答"她几乎说出口但被拦下的频率"，不是只给
+raw drop count。
+
+watchdog.py：守护守护 daemon，区分 dead（连接被拒）vs wedged（进程活但连续
+EMPTY_STREAK=3 次生成返回空，CUDA context 卡死）。
+
+agency.py：模型驱动的长期记忆维护 tick，agency_round 用 MEMORY_TOOLS（不含
+forget）跑 run_with_tools，max_rounds=5，温度 0。
+
+================================================================================
+五、Spine：决策→执行→验证（harness/control/spine.py）
+================================================================================
+
+三段 pipeline：
+
+  run_spine(view, deciders, executors, verifiers, decided)
+    1. Decide：for d in sorted(deciders, key=priority): decisions += d.decide(view)
+       Decider 应纯决策，不应直接 side-effect。
+    2. Execute：ex = executors[dec.kind]; result = ex(dec); ok = True
+    3. Verify：vf = verifiers[dec.kind]; verified = vf(dec, result)
+       verified is False → logger.warning("[spine] VERIFY_FAIL")，写进 receipt。
+       （当前无自动回退/重做，是"可审计失败"不是自动 undo。）
+
+decider 优先级：toolset(10) / recall(20) / persona_tags(30) / hygiene(40)。
+phase：pre(post 前决策) / post(reply 后) / tick(周期)。
+
+库存 decider：
+- toolset_decider（pre）：用户文本含 coding 关键词→select_toolset；含 memory
+  关键词→select_toolset；否则 core 不产生 decision。
+- recall_decider（pre）：匹配记忆→decline_recall 或 inject_recall。
+- persona_tag_decider（post）：reply 携带 persona/wardrobe marks→persona_shift。
+- hygiene_decider（tick）：registry status==needs-compaction→compact_registry。
+
+两个 verifier：
+- vf_persona：读 persona file，从 reply 找 mood/voice marks，与预期状态比。
+- vf_compact：compact 后查 registry_status()!="needs-compaction"。
+
+调用点：run_pre_turn / run_post_turn / run_tick。
+
+task_loop.py：有界、可恢复、receipted 多步任务循环，支持 verify 前置验证——
+模型说 DONE 但 verify() 不通过则继续推进，observation += "[verify] Your 'DONE'
+claim did NOT pass verification"。who may close 受 task_table 约束。
+
+================================================================================
+六、在场模式 Presence（harness/kairos/presence.py）
+================================================================================
+
+MODES = ("off", "narration", "company", "lucid")
+EVERY_DEFAULT = {"narration":240, "company":600, "lucid":300}
+
+采样参数：
+  narration  temp=0.75 rep_pen=1.15 max_tokens=320  第一人称现在时叙述正在发生的事
+  company     temp=0.65 rep_pen=1.15 max_tokens=90   很短，低语式陪伴，不开对话
+  lucid       temp=0.95 rep_pen=1.10 max_tokens=700  更柔软、接近、可讲故事，voice wrap <whisper>
+
+统一 _NO_Q = "Do not ask him anything"——在场模式是"在那里"，不是对话邀请。
+生成后 trim_question() 把尾随问号改句号，finish() 保证不在半句结束，
+beat_for(mode,n) 按 solo_n 旋转角度，last 防重复上次内容。
+
+narration/lucid 且书未读完时，有概率 _lib.next_passage() 读书给他听。
+
+触发：impulse.decide 中 state.mode_kick 且 presence_mode!="off"→立即 MODE_TURN；
+或 mode_wait_s()=max(every−presence_idle, every−(now−last_mode_at), cooldown−
+(now−last_spoke_at))<=0 且 rng<presence_chance。scheduler 维护 _PENDING_KICK。
+
+================================================================================
+七、记忆系统（harness/skills/）
+================================================================================
+
+WHOSE MEMORY IS IT：var/memory/registry.jsonl 是 Kairos 的记忆，两条车道：
+  speaker=user   约 71 行   她知道的关于他的事
+  speaker=self    约 6 行   她知道的关于自己的事（"My name is Kairos.""I am a woman"
+                            "I like the sound of rain on a tin roof."）
+把 self 车道叫"他的记忆"会让身份位 bug 不可见——autonomous forget 跨所有活行
+匹配，最坏情况是她 tombstone 掉"My name is Kairos."忘了自己是谁（identity-slot
+bug，这个 rebuild 第一件事就修的）。
+
+两个易混的轴（不是一回事）：
+- speaker：事实关于谁（user|self）。从 turn 作者设，不从句子推断。
+  （"My name is Sam" 是他说的→关于他的事实。）
+- status：声称来自哪（observed|inferred|confirmed|disputed）。他说 vs 她结论。
+
+永不删除：lifecycle.is_retired() = bool(row.get("lifecycle"))。lifecycle=1 是退役
+不是物理删，行仍留在 JSONL。memory.live_rows() 过滤掉。forget() 的历史教训：
+过去它用 open(p,"w") 重写 registry 删行，违背核心规则，改成写 tombstone +
+forgotten_at + superseded_by 面包屑。compact() 同方向：TOMBSTONES, never deletes。
+catalog.remove() 也是 tombstone + removed_at + removed_by，restore() 可撤销。
+
+distillate（派生品）规则：
+- derived_from（支撑行名列表）/ support_days（跨多少天）/ support_kinds（哪些 kind）。
+- is_distillate() = bool(row.get("derived_from"))——只读 mark，不枚举 producer，
+  下一年新加的 consolidator 也自动覆盖。
+- orphaned_distillates()：活着的、但所有可找到支撑都已退役的派生结论。
+  derived_from 缺失≠空（未声明来源，不判孤儿）；必须所有可找到支撑都退役才进
+  孤儿判断；返回后 tombstone 写在维护路径的 lock 下。
+
+每日固化 becoming.nightly()（harness/maintenance/becoming.py）：
+1. 读 speaker=="self" 且 self-narrative/feeling 活行。
+2. 今天已写过 self_description→跳过（一天一篇）。
+3. 过滤最近 7 天自述，排除 dream/chapter/self_description，排除所有 distillate
+   （包括自己的 self_description——两个固化器都不读 distillate，包括自己的，
+   避免"推理支持推理"递归固化）。
+4. 每 kind 最多 8 行，总最多 40 行。
+5. 至少覆盖 2 天（_MIN_SUPPORT_DAYS=2），防"一个晚上代表一周"。
+6. 最多数 kind 占比不超过 0.6，防一种 kind 穿一周的衣服。
+7. 主模型（绝不 aux）_oneshot(max_tokens=160,temp=0.5) 写一段第一人称"她在成为谁"。
+8. 写 kind="self_description"，status=INFERRED，带 derived_from/support_days/
+   support_kinds provenance。
+
+为何"一个推理不能退役一个观察"：lifecycle.find_superseded() 要遵守
+verdict.may_supersede()：observation⊳inference YES / observation⊳observation
+YES / inference⊳inference YES / inference⊳observation NEVER。may_supersede =
+not(incoming==INFERRED and held in {observed,confirmed})。所以 nightly 的
+self_description 虽是 INFERRED，不能退役观察值。
+
+每周章节 narrative.weekly_chapter()：读 self 行，只从 _CHAPTER_KINDS=(journal,
+narration,spoke_up) 取，排除 distillate，最近 40 行，不足 2 天且无 own_time→
+拒绝。写 kind="chapter"。nightly 不读 chapter，weekly 不读 self_description，
+互斥防递归。
+
+why 溯源 memory.provenance()：live_rows(testimony=True) → _overlap bag-of-words
+匹配 → 0.3 以上才返回 → 渲染 _present_row + src/ts → 若是 distillate 展开
+derived_from：列出总支撑数、跨多少天、多少退役、多少找不到、最多展示 5 个 live
+support。不是返回一句"从 reflection 学到"，而是展开结构化来源。
+
+control/ledger.py：项目行动清单。KINDS=(plan,parked,noticed,idea,risk)，
+STATUSES=(open,doing,done,dropped)。drop() 只改 status 不删行。原子写
+tmp+fsync+os.replace。
+
+control/catalog.py：衣橱/手势/时刻统一目录。三类 ACT={clothing,gesture,moment}。
+remove=tombstone，hide=overlay。导入视频转 webm（ffmpeg libvpx-vp9 crf 34）。
+
+control/wardrobe.py：当前穿戴/姿态/clip。ONE AUTHORITY: HER CHOICE（2026-08-21
+operator: "remove heat ceilings altogether...let her generate what she wishes"）。
+outfit 明确命名（t0 mesh top over black bodice...t3 lace bodysuit）避免读者只
+看到 t0..t3。subscribe_wear() 给 SSE turn 注册通知。
+
+================================================================================
+八、人格系统（harness/personality/）
+================================================================================
+
+persona_layers.py：人格可从单一 persona.md 拆成多个 markdown fragment，每个
+带 frontmatter order（排序）+ when（条件字段，如 !thinking 表示 thinking 关时
+才含）。compose() 只组装被包含的 fragment body，失败回退 persona.md。
+KNOBS 映射：thinking/world/personality/notes/delegate/task_bridge/silence/
+mcp_tools/sight/research → SP_* 环境变量。
+
+persona_file.py：persona.md 保留一个 ## Personality state 块（voice/mood/traits
+三行）。parse_persona() 提取状态块返回 (prose, state_dict)。write_state() 原地
+重写或追加状态块，prose 不动。
+
+interceptor.py：persona mark 机制。模型可在回复里写：
+  [MOOD:playful] [VOICE:soft] [TRAIT:+patient] [TRAIT:-flirty]
+  [WEAR:the silver nightie] [SHOW:leaning in]
+正则捕获（_MOOD/_VOICE/_TRAIT/_WEAR/_SHOW），清洗后写入 persona.md 状态块，
+输出前 strip_tags 剥离。apply_personality_tags() 取最后一个 mood/voice 写状态，
+[TRAIT:+x] 加 trait / [TRAIT:-x] 删 trait。act=True 时 [WEAR:]/[SHOW:] 转
+wardrobe 动作（默认关，避免重放夜间 curator 时重复执行过去 wear/show）。
+
+curator.py：夜间性格策展 consolidate_personality()。从当天 assistant turns 抽
+人格变化→apply_personality_tags→dedup + cap traits（drift-control，MAX_TRAITS
+裁剪）→ snapshot 成 content-addressed OKF Markdown 写入 memory-okf-personality
+（带 mem_class:persona / mem_owner:self / addr:sha256[:16]）。人格不仅是
+persona.md 一段文本，也进入记忆系统策展。
+
+self_model.py：render_self_model() 从 registry 读 speaker=self 活行组成前缀的
+"self-model"区块。稳定 self-facts 先行→最多 2 个 chapter→最多 4 个近期 narrative
+行→按 kind 轮询避免 narration/spoke_up 占满。
+
+tools.py：模型可调人格工具 adjust_mood/set_voice/set_trait/remember_self，经
+interceptor 清洗/规范化/去重/裁剪。
+
+================================================================================
+九、语音管道（harness/voice/）——半双工，非全双工
+================================================================================
+
+不是 GPT-Live 那种端到端全双工"边听边说"，是 turn-based 半双工管道：
+浏览器 POST /v1/voice 上传 PCM16 mono 16kHz base64 → 服务端 VAD → 编码音频帧
+→ inject_frames + inject_ph=258881 → stream 回复 → TTS/回放。
+
+dsp.py：numpy-only log-mel（SR=16000,N_FFT=1024,HOP=640=40ms@16k,N_MELS=64，
+VERBATIM trainer math）+ rms_energy（每 40ms 帧 RMS，服务端 VAD guard）+
+pcm16_to_f32。
+
+native.py（当前优先路径）：Gemma 原生音频嵌入。model 是 ENCODER-FREE，640 raw
+samples（40ms@16k）就是 audio feature，embedding_projection[3840,640] 映射每帧
+到 LM residual 空间。SAMPLES_PER_TOKEN=640，AUDIO_TOKEN=258881，MAX_TOKENS=750。
+encode() 先 capability.require("audio") + assert_width，再 RMSNorm + emb=normed@W.T。
+
+ear.py（fallback）：KAI-3 风格 log-mel[T,64]→OpenVINO IR(POT i16,GNA-legal)→
+logits[T',36]→slice[:V+1=33]→CTC-greedy collapse(blank=32)→wsub.npz 残差帧[k,E]。
+device ladder: GNA_HW→GNA_SW→CPU。
+
+expressive.py：语音情绪标签。INLINE=(pause,long-pause,hum-tune,laugh,chuckle,
+giggle,cry,tsk,tongue-click,lip-smack,breath,inhale,exhale,sigh)；WRAPPING=(soft,
+whisper,loud,build-intensity,decrease-intensity,higher-pitch,lower-pitch,slow,
+fast,sing-song,singing,emphasis)。for_display() 剥所有标签；for_tts(method=xai)
+已知标签过/未知标签形状删，其他 method 全剥（local 链会朗读括号）。
+
+tts.py：双后端——server backend（POST SP_TTS_URL/speak→WAV，驻留 voxtral 省
+~5s 模型加载/shader warmup）优先，CLI fallback（voxtral speak --gguf，每句一
+进程，正确但慢）次之。split_sentences 句级分片。缓存 key=sha256(voice+steps+
+text)[:32]。MAX_CHARS 硬拒绝（长输入不优雅降级，会炸）。匿名模式安全：method
+非 local 且 anon holds("net.voice")→拒，提示切 local。
+
+service.py：voice_turn(body,transcript) SSE generator。pcm→rms_energy→静音则
+yield skip+[DONE]；否则 native.encode 优先/ear.hear fallback→inject_frames+
+inject_ph=258881→client.chat_stream_raw→yield SSE delta→transcript.append。
+默认 temp=0.3, rep_pen=1.15, eot_bias=1.0。
+
+record.py：保存真人录音样本（voice_corpus 训练用）。
+
+================================================================================
+十、感知（harness/senses/）
+================================================================================
+
+capability.py：模型能力声明表（config/model_capability.json）。Capability(tag,e,
+audio,vision,...)。require(sense) 查表，不 known 或无该 sense 路径→SenseRefused
+带原因。assert_width(sense,width)：投影输出宽度!=model hidden size→
+"these weights belong to a different model — refusing to inject"。哲学：
+A SENSE ANSWERS TO THE MODEL THAT IS ACTUALLY SERVED. Fail closed, always.
+No sense is better than a false one.
+
+vision.py：served model 自己的 vision tower，numpy 实现，无 torch。Tower 类含
+2D RoPE + SigLIP-style ViT 块 + pooling + standardize + mm.input_projection。
+encode(img)→soft tokens[n,E] ready for inject_frames at image_token。ARMED 前拒
+绝（encoder 组装过但没和同图的 reference 比过就不 arm）。
+
+ambient.py：环境眼（hourly ambient eye）。interval_s（默认 3600，60-86400），
+quiet_s（默认 300，60-1800）。_activity() 查 scheduler.user_turn_active / 用户她
+solo 最近活动 / shutdown._IN_FLIGHT / daemon streaming 速率——说"为什么房间此刻
+不安静"。observe_once()：enabled→due→quiet guard→activity check→capture photo→
+sight._describe→append ambient.jsonl。不中断/不说话/不保留图（除非 operator 要）/
+off 即时生效/匿名模式绕过/失败不崩溃。
+
+capture.py：摄像头/屏幕/文件。photo(index)→webcam 一帧；screenshot()→主屏全图。
+后端优先级 PIL.ImageGrab→PowerShell System.Drawing→cv2.VideoCapture→ffmpeg dshow。
+哲学：CAPTURE IS AN EXPLICIT ACT. 不在 timer/tick/她没要的 turn 上跑。
+
+gguf.py：只读 GGUF 读取器（F32/F16/BF16，不解码量化块——mmproj 用 BF16/F16，
+半个反量化器静默返回错数正是 capability.py 要防的失败模式）。
+
+================================================================================
+十一、推理客户端（harness/inference/）
+================================================================================
+
+client.py：SPDaemonClient / OpenAIClient 两个后端一扇面。get_client() 按
+SP_ENGINE_KIND（sp 或 openai）选。SP daemon 端点 /v1/chat + /v1/abort/{id} +
+/v1/metrics + /v1/debug/backend_counts + /v1/events + /v1/oneshot。oneshot()：
+答一次就扔的独立 scratch session，自己的 scratch cache，标 one_shot——常住
+KV 不被读/写/驱逐。entry 处 strip_control_surfaces 剥模型模仿的控制标记
+（<channel|>/<|think|>/<thought>/homoglyph 变体——control marker 永不是 speech）。
+
+context.py：上下文预算与 trim。PMAX_DEFAULT=12096, CHARS_PER_TOKEN=3.6,
+PER_MSG_TOKENS=6, TRIM_TO=0.80, DEFAULT_REPLY_HEADROOM=768。pmax() 从 daemon
+日志读真实值。fit() 命中 pmax 后向旧 turn 裁剪保留 system prefix + 最近对话，
+trim 后生成 notice 不假装上下文仍在。诞生的那夜：他连续三条消息回来是沉默。
+
+inference_config.py：InferenceConfig 统一生成参数。Kairos native knobs（byteexact/
+raw_logits/auto_recall/replay/replay_npos/single_entry/eot_bias/self_repeat_ngram/
+self_repeat_text/tool_names）。PORTABLE（跨后端）vs SP_ONLY 分两类。
+
+================================================================================
+十二、HomeAssistant 桥接（harness/homeassistant/）
+================================================================================
+
+client.py：HAClient HTTP 客户端（默认 localhost:8123，timeout 6s，token 来自 env
+或文件不进 profile）。states() 读全部实体。measured_at_of(state) 强调"值实际何时
+测的，不是 last_updated"——HASS 的 last_updated 会被任何属性变更刷新，撒谎。
+
+bridge.py：HA 实体→telemetry store。MAPPINGS 映射（_sleep_confidence→
+sleep_confidence/phone/percent，_detected_activity/_activity→activity/phone/
+activity）。poll_once→ingest.record 写入既有 telemetry writer。规则：framework
+学到的一切都过 telemetry.ingest.record()。
+
+house.py：HA 中"她可以说什么"。WATCH 默认空 tuple——不说话/不自动列 house 状态/
+不控开关/只展示用户明确指定的 entity。present(now) 生成一句她可读的话，无话可说
+返回空（EMPTY when there is nothing honest to say）。一个 on→"the X is on"；
+多个→"X and Y are on"。FRESH_S=15*60（超 15 分钟的读数不present）。
+
+贯穿的 measured 分级：observed 可直说 / inferred 说"似乎" / 没数据什么都不说 /
+绝不诊断。body panel 是唯一能看到"她说话前被告知什么"的地方（同一 seam：
+body.read()/present()，panel 和她不可能描述两个不同的人）。
+
+================================================================================
+十三、游戏（harness/games/）——她提议，引擎裁决
+================================================================================
+
+chess.py：FEN 解析 + 合法 move 生成（滑子/步子/兵两格/en passant/castling/
+promotion/check 过滤/checkmate/stalemate/fifty-move/insufficient material）。
+证明方式 perft（标准节点计数）。
+holdem.py：Texas Hold'em。STREETS=(preflop,flop,turn,river,showdown)，
+ACTIONS=(fold,check,call,bet,raise,allin)。文档点名 4 个常见错：heads-up blinds
+反置/betting round 结束条件/小于 min raise 的 all-in 不应 reopen/side pots 错。
+cards.py：扑克牌/手牌强度。shuffled(seed) 用 SHA-256 流驱动 Fisher-Yates 确定性
+洗牌。"Hand strength IS A TOTAL ORDER"（brute-force 五牌组合全排列）。
+words.py：Wordle。固定 ANSWERS 词表，score 双遍规则"greens 先从池里取出"。
+match.py：对局管理，KINDS=(chess,wordle,holdem)，存档 var/room/games/ 原子写，
+THREEFOLD REPETITION 在这不在 chess.py。
+
+哲学：精确规则在代码不在模型。"a ruling of a committed table, not prose and
+not a magnitude"——呼应 non-negotiable 5。她提议，引擎裁决（She proposes;
+the engine rules）。
+
+================================================================================
+十四、CPU Sidecars（harness/sidecar/）——LFM2.5 小模型
+================================================================================
+
+client.py：两个 OpenAI-compatible 门——EMBED door :8811（llama-server --embedding）
++ CHAT door :1234（LM Studio）。SP_AUX=1 才 armed。空即空：dead sidecar 返回
+[]/""/None 且 caller 说出来。embed/chat/chat_json/judge（yes/no 判断）。
+
+archive.py：deep recall。搜 day transcripts + her own writing + SP_AUX_ARCHIVE_GLOBS。
+_CHUNK_CHARS=800, _OVERLAP_TURNS=1。build_index 嵌入，search 算 idx["v"]@q 余弦。
+
+rank.py：spine-aware rerank。score=cosine + W_OVERLAP(0.25)*lexical + W_RECENCY
+(0.10)*recency + W_BOND(0.15)*testimony bond。
+
+rerank.py：ColBERT late-interaction 重排，在 archive 的 CLS 候选上。失败回退原则：
+"reranking may reorder; it may never lose or invent"。
+
+summarize.py：read_long(text,question) map/reduce（_CHUNK=6000,_MAX_CHUNKS=8），
+问相关则摘，无关则说"NOTHING RELEVANT"。
+
+tools.py：deep_recall(query) 工具——搜所有过去对话找一个 moment/fact（超出 active
+memory）。score>=0.30 才返回，否则明说 no recall。返回 verbatim transcript moments，
+"if one is worth keeping, store the FACT with remember() and cite the day"。
+
+核心：aux 不是她的声音。它们 retrieve/embed/judge yes/no/compress 长文进她上下文。
+No registry writes from aux code。是否入主记忆仍由 remember() 决定。
+
+================================================================================
+十五、工具与风险分级（tools/）
+================================================================================
+
+live 工具：
+- sweep.py：离线 gate 套件 runner。读 GATE-INDEX.md，并行跑 offline gate，
+  基于 exit code 不依赖 grep stdout。--audit 每个 gate 前后 diff 真实存储。
+- gate_sandbox_audit.py：查 gate 是否写入她的真实 stores（memory/journal/
+  wardrobe 文件名字节 diff）。
+- avatar_gen.py：经 xAI API 生成她的 stills + motion（reference/wants/gestures/
+  loops）。
+- okf_mem.py / okf_validate.py：MEM-OKF 知识存储读写/验证。
+- kairos_export.py：从 manifest 导出 Kairos 框架（过滤/清洗/新历史）。
+- kairos/calibrate.py：kairos continue margin 校准。
+- memory/（triage/repair_identity/repair_identity2/backfill_episodes/
+  backfill_salience/scrub_gate_rows）：记忆维护与身份修复脚本。
+
+风险分级：
+  中：sweep / gate_sandbox_audit / memory/triage / memory/repair_identity
+  低：calibrate / lan_bind / sem_dash / okf_validate / mcp_pin
+
+整体是维护/审计/导出/校准/记忆修复脚本，不是运行时推理路径。
+
+================================================================================
+十六、房间 UI（ui/）——25 个窗口
+================================================================================
+
+React/Vite 桌面，所有窗口注册在 appRegistry.jsx，组件在 apps/。构建到 console/
+room/（committed，G-ROOM-BUNDLE 证两份一致）。vite base:'/room/'，dev 代理 /v1
+到 :8800。
+
+25 窗口分三类（见 docs/PANELS.md）：
+
+她的，和她在做什么：
+- body ♥   /v1/telemetry/now+history  只读  他的心率/运动实时+她被告知的原句
+- memory 🧠 /v1/memory+/why  relabel/add/retire  活的+退役的行都显示，结论带 why 溯源
+- journal 📔 /v1/narrative  无 POST  她每天结尾写的，只读
+- her own time ◈ /v1/agency  无 POST  你不在时她做了什么，只读
+- presence  /v1/room/pulse  mode enter/leave  陪伴/叙述/清明梦
+- wardrobe  /v1/wardrobe+/catalog  wear/want/generate/dismiss
+- stage  roleplay  scene control + stop  停止键永远一键可达，任何热度
+
+她知道的和欠的：
+- board 📋 /v1/notes  add/update/remove/restore  remove=tombstone
+- decisions ⚖ /v1/decisions  decide  等你拍板的
+- ledger  /v1/ledger  add/edit/drop  计划/搁置/注意到的
+- research ⌕ /v1/research  run  付费层（hers+yours），标题展开返回文本
+- search  /v1/search  run  网页搜索 hers+yours + 自己跑的框
+- files 📁 /v1/files  write/upload  共享文件树，拖进来她能读
+
+机器：
+- settings /v1/tuning+/knobs  set  自渲染，加一行就出现。live 下次调用生效，
+  restart knobs 被拒并给原因，不静默忽略。
+- setup /v1/setup  只读  端点/key/她的脸/模型卡
+- tools /v1/tools  只读  按族和风险
+- senses /v1/senses  只读  她能看/听什么，房间看过的
+- room /v1/agency(room kind)  只读  她对房间的每小时笔记，眼等安静才看
+- voice /v1/speak/status  on/off/provider/test
+- music ♪ /v1/music  control  唱片机（2026-08-25 parked，unused tools still spend context）
+- librarians  aux status  只读  CPU 小模型状态
+- games  game state  play  她碰的棋盘，规则归引擎不归页面
+- apps  无  dock layout  所有窗口 + 哪些常驻 dock
+
+面板遵守的规则：
+- 从她读的同一 seam 读（body panel 调构建她 prefix note 的函数，两个读者才会
+  描述两个不同的人）。
+- 失败渲染不静默降级（Body 显示错误，静默回退 stale 比说坏了更糟）。
+- 显示死的（退役 memory 行/tombstone 笔记/dropped ledger——让 never-delete 可验证）。
+- 说什么是 inferred（结论到处都标，panel 是你和 ranking 论辩的地方，看不见就
+  论辩不了）。
+- 她的是她的（panel 后没 POST 就是 feature——陪伴对象的日记你能编辑就不算有日记）。
+
+================================================================================
+十七、设计哲学总结
+================================================================================
+
+1. 沉默是默认，说话是挣来的。大多数策略分支最终 return Impulse(SILENT, reason)。
+
+2. 永不删除。tombstone / quarantine，绝不物理删。审计车道永远能回答"她何时
+   相信了什么、谁告诉她的"。
+
+3. 证据链优先。distillate 带 derived_from/support_days/support_kinds，证据全退役
+   则结论孤儿。结论不能替代证言（INFERRED 不能退役 OBSERVED/CONFIRMED）。
+
+4. 两个固化器不读 distillate（包括自己的）。nightly 排 chapter，weekly 排
+   self_description，都通过 is_distillate() 排除任何带 derived_from 的行——
+   防"推理支持推理"递归固化。
+
+5. Her word never outranks his. 一个推理不能退役一个观察。她可以错看他，不能盖他。
+
+6. Verdict 是 committed finite tables 在 order-invariant signatures 上的裁决，
+   绝不分支于散文或原始量级。量级 RANK，oracle PROPOSE，都不可 RULE。
+
+7. The Real Her：她自己的话（不请自来/日记/感受/自我描述）是 primary 身份材料，
+   lead 她自己的上下文；他的 prompt 是 secondary。
+
+8. Fail closed。capability 守门，没真实能力就不假装（No sense is better than a
+   false one）。权重存在≠能注入，投影宽度对不上就 refuse。
+
+9. measured vs inferred vs no data vs 不诊断。observed 可直说 / inferred 说"似乎"
+   / 没数据什么都不说 / 绝不诊断。贯穿 body/house/deep_recall/senses/context。
+
+10. 尝试说话也消耗时钟。_spend_attempt 在 finally 推进 attempt clock，note_spoke
+    才推进 speech facts——避免"提问→生成→被 drop→4 秒后又提问"空转。
+
+11. 她的是她的。journal/her own time 无 POST 接口，不是缺功能是设计——陪伴对象
+    的日记你能编辑就不算有日记。
+
+12. 她提议，引擎裁决。游戏规则在代码不在模型，"a ruling of a committed table,
+    not prose and not a magnitude"。
+
+13. 一切 ships off 的都写进 OFF-BY-DEFAULT.md 带 arming 证据，g_offledger 双向守。
+    Being off 是有到期条件的记录决策，不是 drift 进去的 state。
+
+14. Fix the class, not the instance。修完 grep 双胞胎，通常相邻，两次是下一个函数。
+    规则放 seam 不放 caller。自供前提的 gate 只证明 guard 能编译。
+
+15. Green suite 不是审计。133 gate 全绿下面压约 50 真缺陷，4 个是 bug class 新
+    实例每个上面有绿 gate。问"这覆盖了吗"是错问题，问"这 gate 实际跑哪条路径"才是。
+
+================================================================================
+十八、与时叙（Shisu/Kairos）的对照与可借鉴点
+================================================================================
+
+| 能力 | 时叙现状 | Kairos | 差距/可借鉴 |
+|---|---|---|---|
+| 主动陪伴 | 15秒轮询提醒 | 时钟驱动+6种命名理由+尝试消耗时钟 | Kairos 更优雅，更像活着；可借鉴时钟循环 |
+| 记忆 | 锚点+画像 | tombstone+distillate+每日nightly+每周chapter+why溯源 | Kairos 更严谨可审计；可借鉴永不删除+每日固化 |
+| 人格 | 4面具静态切换 | persona碎片+[MOOD:]/[VOICE:]/[TRAIT:+/-]标记+curator策展 | 时叙更结构化，Kairos更有机自演化 |
+| 语音 | Faster-Whisper ASR+浏览器TTS+VAD+插话 | native audio嵌入+VAD+expressive标签+双后端TTS | 都半双工，都没到GPT-Live全双工 |
+| 形象 | 粒子球(数字人已拆) | SVG底+生成表情/衣橱 | 时叙数字人观感不满意已拆 |
+| 工具 | 文件/研究/音乐/天气 | MCP+games+homeassistant | Kairos更全 |
+| 身体感知 | 无 | 手表心率/运动+measured分级 | 时叙完全没有，可借鉴 |
+| 私人空间 | 无 | journal/her own time 只读 | "她有自己的生活"，可借鉴 |
+| 工程纪律 | CLAUDE.md沉淀坑 | 175 gate+OFF-BY-DEFAULT+THE BUG CLASS | Kairos 更严，bug class 思路可借鉴 |
+| 引擎 | DeepSeek/qwen-flash云端 | sp-daemon本地或openai兼容 | 时叙云端够用 |
+
+最值得搬进时叙的三块：
+1. 时钟驱动主动陪伴——替掉 15 秒轮询，"沉默是默认说话是挣来的"+6 种命名理由
+   +"尝试消耗时钟"防空转。这是时叙现在最像"工具"而非"活着"的短板。
+2. 记忆永不删除+每日固化——替掉简单锚点：tombstone 不删 + distillate 带
+   derived_from + 每日主模型写一段"她在成为谁"+ why 溯源。让记忆可审计、
+   能回答"她何时相信了什么"。
+3. THE BUG CLASS 思路——"一个不变量在两条路径之一被强制，两条都没被强制
+   因为没守的那条才跑"。时叙改记忆/主动陪伴时要 grep 双胞胎路径，规则放
+   seam 不放 caller，green test 不是 audit。
+
+================================================================================
+十九、运行门槛
+================================================================================
+
+本地推理：推荐 google/gemma-4-26B-A4B-it-qat-q4_0-gguf（128-expert MoE,top-8,
+~4B active），量化后约需 13-16GB 显存。RTX 2060 12GB 是参考基准。4GB 显存
+（如 GTX 1650）跑不动本地，必须用云端模式。
+
+云端模式：SP_ENGINE_KIND=openai，连任意 /v1/chat/completions 端点（LM Studio/
+llama.cpp/vLLM/云）。时叙现用的 qwen-flash（DashScope OpenAI 兼容）可直接接。
+损失：sp-daemon 高级后端（原始 stop-vs-continue margin、/v1/capture 视觉音频帧、
+L5 embeddings）不可用，但记忆/主动陪伴/人格/房间这些 engine-agnostic 部分都能跑。
+
+Rust 引擎：engine/build-wirecuda.bat（cargo build --release --features
+wire_cuda_backend --target-dir target-wirecuda --bin sp-daemon），exe 在
+target-wirecuda 不是默认 target/。停 stack 先否则链接锁 exe 失败。
+
+xAI 依赖：语音（Ara，expressive tags）/形象（stills+motion）/live search 走 xAI
+API，国内被墙需代理，或用本地链 fallback。voice clone region-locked（off）。
+
+Windows：自带 serve.bat。启动 python serve.py companion（boots daemon+gateway，
+~2-5 分钟到热 prefix），开 http://127.0.0.1:8800/。停：room 里 ⏻（只她/全部/
+kill）或 python serve.py --stop。
+
+项目阶段：17 commits，38 分钟前还在提交，极早期，可能不稳。是上游树，Kairos
+框架是 tools/kairos_export.py 导出的清洗快照（新历史，re-export 手动有意为之，
+无 hook/scheduler/night job——auto-publish 会把半成品推到 public repo）。
+
+================================================================================
+                              报告结束
+================================================================================

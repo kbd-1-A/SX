@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>时叙 · 拟人化情绪系统方案</title>
+<style>
+  :root{--bg:#0d1117;--card:#161b22;--border:#30363d;--text:#c9d1d9;--muted:#8b949e;--accent:#58a6ff;--green:#3fb950;--orange:#d29922;--red:#f85149;--pink:#f778ba;--mono:'SF Mono','Cascadia Code',Consolas,monospace}
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--text);font-family:-apple-system,'Segoe UI',sans-serif;line-height:1.7;max-width:980px;margin:0 auto;padding:32px 24px}
+  h1{font-size:1.9em;color:#fff;border-bottom:2px solid var(--pink);padding-bottom:12px;margin-bottom:8px}
+  .subtitle{color:var(--muted);font-size:.9em;margin-bottom:32px}
+  h2{font-size:1.35em;color:var(--pink);margin:36px 0 14px;padding-bottom:6px;border-bottom:1px solid var(--border)}
+  h3{font-size:1.08em;color:#fff;margin:24px 0 10px}
+  h4{font-size:.98em;color:var(--orange);margin:18px 0 8px}
+  p{margin:10px 0}ul,ol{margin:10px 0;padding-left:26px}li{margin:6px 0}
+  code{font-family:var(--mono);background:#0d1117;padding:2px 6px;border-radius:4px;font-size:.88em;color:#79c0ff;border:1px solid var(--border)}
+  pre{background:#0d1117;border:1px solid var(--border);border-radius:8px;padding:14px 16px;overflow-x:auto;margin:14px 0}
+  pre code{background:none;border:none;padding:0;color:var(--text);font-size:.84em;line-height:1.6}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:.9em}
+  th,td{border:1px solid var(--border);padding:9px 12px;text-align:left}
+  th{background:#21262d;color:#fff;font-weight:600}tr:nth-child(even){background:#161b22}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:18px 22px;margin:16px 0}
+  .card.green{border-left:4px solid var(--green)}.card.orange{border-left:4px solid var(--orange)}.card.red{border-left:4px solid var(--red)}.card.blue{border-left:4px solid var(--accent)}.card.pink{border-left:4px solid var(--pink)}
+  .tag{display:inline-block;padding:2px 9px;border-radius:12px;font-size:.76em;font-weight:600;margin-right:6px}
+  .tag-yes{background:#3fb95033;color:#7ee787;border:1px solid #3fb95055}
+  .tag-half{background:#d2992233;color:#e3b341;border:1px solid #d2992255}
+  .tag-no{background:#f8514933;color:#ffa198;border:1px solid #f8514955}
+  .small{color:var(--muted);font-size:.84em}.kw{color:#ff7b72}.str{color:#a5d6ff}.com{color:#8b949e}.hi{color:#e3b341}
+  b,strong{color:#fff}
+  .toc{background:#161b22;border:1px solid var(--border);border-radius:10px;padding:16px 22px;margin:24px 0}
+  .toc ol{margin:0}.toc a{color:var(--accent);text-decoration:none}.toc a:hover{text-decoration:underline}
+  .quote{border-left:3px solid var(--pink);padding-left:14px;color:var(--muted);font-style:italic;margin:14px 0}
+  .foot{margin-top:40px;padding-top:16px;border-top:1px solid var(--border);color:var(--muted);font-size:.82em}
+  .emo{display:inline-block;width:54px;font-weight:600}
+</style>
+</head>
+<body>
+
+<h1>时叙 · 拟人化情绪系统方案</h1>
+<div class="subtitle">基于 AILiveVTuber-Stage 情绪四件套改造 · 适配时叙（qwen-flash + 粒子球不参与 + 情绪进记忆）· 2026-08-26</div>
+
+<div class="card pink">
+<b>已确认的方向</b>：中度（情绪标签驱动）· CosyVoice Instruct 语气控制 · quick_react 即时反应层 · 情绪必须细致且<b>回应式</b>（根据你的话发挥）· 不做表情/人像 · 粒子球保持纯陪伴视觉不随情绪变 · 拟人词靠 persona 自然产出不强制模块 · 情绪进记忆持续（会记仇/记喜）。
+</div>
+
+<div class="toc">
+<b>目录</b>
+<ol>
+  <li><a href="#feasible">你的需求可实现性总览</a></li>
+  <li><a href="#design">总体设计：四件套如何落到时叙</a></li>
+  <li><a href="#three">情绪系统三层架构</a></li>
+  <li><a href="#labels">细化情绪标签集 + 映射表</a></li>
+  <li><a href="#inner">inner_world 持续情绪（进记忆）</a></li>
+  <li><a href="#feasible-code">可行性诚实评估（基于现有代码）</a></li>
+  <li><a href="#quick">quick_react 即时反应层</a></li>
+  <li><a href="#tts">CosyVoice Instruct 接入</a></li>
+  <li><a href="#persona">persona 强化：拟人词/情话/热梗</a></li>
+  <li><a href="#learn">自主学习激活</a></li>
+  <li><a href="#active">主动互动情绪驱动</a></li>
+  <li><a href="#stages">实施阶段</a></li>
+  <li><a href="#risk">风险与待确认</a></li>
+</ol>
+</div>
+
+<h2 id="feasible">一、你的需求可实现性总览</h2>
+<table>
+<tr><th>需求</th><th>可否</th><th>说明</th></tr>
+<tr><td>记忆+情绪+语气有人情感</td><td><span class="tag tag-yes">能</span></td><td>本方案核心，情绪三层架构+inner_world进记忆</td></tr>
+<tr><td>根据我的话发挥回复（回应式）</td><td><span class="tag tag-yes">能</span></td><td>情绪感知层理解你的话→生成时叙回应情绪→注入回复</td></tr>
+<tr><td>情绪细致（会生气会温柔）</td><td><span class="tag tag-yes">能</span></td><td>18种细化中文情绪标签，比英文6类细</td></tr>
+<tr><td>主动互动</td><td><span class="tag tag-half">已有半成品</span></td><td>时叙已有15秒轮询主动陪伴，改造为情绪驱动</td></tr>
+<tr><td>自己学习（之前写过没实现）</td><td><span class="tag tag-half">半成品激活</span></td><td>memory里已有message_feedback/goals/观察层，方案落实打通</td></tr>
+<tr><td>说情话</td><td><span class="tag tag-yes">能</span></td><td>温柔面具+宠溺/害羞情绪+persona引导，自然带出</td></tr>
+<tr><td>懂热梗</td><td><span class="tag tag-yes">能</span></td><td>qwen-flash训练数据含近期梗；时叙已有research工具补实时梗</td></tr>
+<tr><td>语音包</td><td><span class="tag tag-yes">能</span></td><td>CosyVoice Instruct（4GB可跑）+ 可复刻</td></tr>
+<tr><td>拟人词（哼/啊/哦）</td><td><span class="tag tag-yes">能</span></td><td>不强制模块，靠persona自然产出+quick_react即时层</td></tr>
+</table>
+
+<h2 id="design">二、总体设计：四件套如何落到时叙</h2>
+<p>借鉴 AILiveVTuber-Stage 的情绪四件套 [$TRAE_REF](https://github.com/KKLL2025/AILiveVTuber-Stage)，按你的决策调整：</p>
+<table>
+<tr><th>AILiveVTuber 四件套</th><th>时叙落地</th><th>差异</th></tr>
+<tr><td>LLM 返回 emotion_tag JSON</td><td>✅ 照搬，qwen-flash 返回结构化 JSON</td><td>加 user_emotion（感知你的情绪）</td></tr>
+<tr><td>emotion_expressions.yaml 映射</td><td>✅ 改造——不驱动 Live2D 表情</td><td><b>粒子球不动</b>，映射到 CosyVoice语气指令 + 字幕色 + quick_react词池</td></tr>
+<tr><td>行为状态机 fsm</td><td>✅ 照搬 IDLE/WAITING/REACTING/SPEAKING/COOLDOWN</td><td>—</td></tr>
+<tr><td>quick_react 即时反应</td><td>✅ 照搬</td><td>—</td></tr>
+<tr><td>inner_world 持续情绪</td><td>✅ 照搬 + <b>进时叙记忆系统</b></td><td>AILiveVTuber 是内存态，时叙落库（会记仇/记喜）</td></tr>
+</table>
+
+<h4>数据流</h4>
+<pre><code>你说话
+  ↓
+[b]情绪感知[/b] LLM 输出 user_emotion（你当前情绪）+ shisu_emotion（她回应情绪）+ reply
+  ↓
+[b]inner_world 更新[/b] 时叙情绪状态（主情绪+强度+衰减）→ 落 memory
+  ↓
+[b]情绪注入[/b] shisu_emotion → 查 emotion_map.yaml
+    ├→ CosyVoice Instruct 语气指令（"用宠溺心疼的语气说"）
+    ├→ 字幕色（温柔=粉/生气=红/委屈=淡蓝）
+    ├→ quick_react 词池（先吐"哎..."填充延迟）
+    └→ system prompt 情境注入（"你现在情绪：心疼，回复要..."）
+  ↓
+[quick_react] 立即吐语气词+字幕（不等 LLM 完整回复）
+  ↓
+LLM 完整 reply → CosyVoice 合成（带情绪语气）→ 播放 + 字幕</code></pre>
+
+<h2 id="three">三、情绪系统三层架构</h2>
+
+<h3>第 1 层 · 情绪感知（理解你的话）</h3>
+<p>qwen-flash 在生成回复时，<b>同时</b>输出它感知到的你的情绪。这让时叙"能理解你说的话"——不只是字面，还有你的情绪状态。</p>
+<pre><code><span class="com"># LLM 返回的 JSON（system prompt 约束格式）</span>
+{
+  "user_emotion": "委屈",        <span class="com">// 感知到的你的情绪</span>
+  "user_intensity": 0.7,         <span class="com">// 强度 0-1</span>
+  "shisu_emotion": "心疼",       <span class="com">// 时叙回应情绪</span>
+  "shisu_intensity": 0.6,
+  "reply": "怎么啦，谁欺负你了，跟我说说。",
+  "action": "comfort"            <span class="com">// 动作意图：comfort/tease/scold/silence...</span>
+}</code></pre>
+<p class="small">用 qwen-flash 的 response_format=json_object 约束输出。若某次 JSON 解析失败，fallback 到纯文本回复 + 默认情绪"平静"。</p>
+
+<h3>第 2 层 · 时叙情绪生成（回应式）</h3>
+<p>时叙的回应情绪<b>不是孤立生成</b>，受四个因素影响——这就是"根据你的话发挥回复"：</p>
+<ul>
+  <li><b>她当前持续情绪</b>（inner_world，比如她正生你气，你哄她她可能还在嗔怪）</li>
+  <li><b>你的情绪</b>（你委屈→她心疼；你得意→她可能嗔怪"又嘚瑟"）</li>
+  <li><b>关系亲密度</b>（记忆画像里有，亲密度高→更宠溺，低→更客气）</li>
+  <li><b>事件本身</b>（你说了什么）</li>
+</ul>
+<p>实现：把这些作为上下文塞进 system prompt，让 LLM 在生成 shisu_emotion 时综合考虑。inner_world 当前情绪显式注入："你现在情绪状态：嗔怪(强度0.5，2小时前你惹她生气了)"。</p>
+
+<h3>第 3 层 · 情绪注入（影响输出）</h3>
+<p>shisu_emotion 查 emotion_map.yaml，驱动四个通道（<b>不含粒子球</b>，按你的决策）：</p>
+<ul>
+  <li><b>CosyVoice 语气指令</b>（主通道，CosyVoice Instruct 模式）</li>
+  <li><b>字幕色</b>（前端字幕浮层，温柔=粉/生气=红/委屈=淡蓝/窃喜=暖橙）</li>
+  <li><b>quick_react 词池</b>（即时语气词）</li>
+  <li><b>情境注入</b>（影响 reply 本身的措辞——生气时短促冷淡，温柔时长暖宠溺）</li>
+</ul>
+
+<h2 id="labels">四、细化情绪标签集 + 映射表</h2>
+<p>18 种细化中文情绪，覆盖陪伴场景。每个标签映射到 CosyVoice 指令 + 字幕色 + quick_react 词池：</p>
+<table>
+<tr><th>情绪</th><th>类别</th><th>CosyVoice 指令</th><th>字幕色</th><th>quick_react</th></tr>
+<tr><td>温柔</td><td>暖</td><td>温柔轻声</td><td>粉</td><td>嗯～</td></tr>
+<tr><td>心疼</td><td>暖</td><td>心疼宠溺</td><td>粉</td><td>哎...</td></tr>
+<tr><td>宠溺</td><td>暖</td><td>宠溺纵容</td><td>暖橙</td><td>行吧行吧</td></tr>
+<tr><td>害羞</td><td>暖</td><td>羞涩小声</td><td>淡粉</td><td>哎呀...</td></td></tr>
+<tr><td>欣喜</td><td>喜</td><td>开心明亮</td><td>亮黄</td><td>哇！</td></tr>
+<tr><td>窃喜</td><td>喜</td><td>得意小声</td><td>暖橙</td><td>嘿嘿</td></tr>
+<tr><td>得意</td><td>喜</td><td>得意俏皮</td><td>亮黄</td><td>哼哼</td></tr>
+<tr><td>释然</td><td>喜</td><td>轻松舒气</td><td>浅绿</td><td>呼～</td></tr>
+<tr><td>嗔怪</td><td>怨</td><td>娇嗔不滿</td><td>橙红</td><td>哼</td></tr>
+<tr><td>委屈</td><td>怨</td><td>委屈小声</td><td>淡蓝</td><td>唔...</td></tr>
+<tr><td>无奈</td><td>怨</td><td>无奈叹气</td><td>灰蓝</td><td>唉</td></tr>
+<tr><td>失落</td><td>怨</td><td>低落慢语</td><td>灰</td><td>哦...</td></tr>
+<tr><td>羞恼</td><td>怨</td><td>羞恼急语</td><td>红</td><td>你！</td></tr>
+<tr><td>生气</td><td>怒</td><td>冷硬短促</td><td>红</td><td>呵</td></tr>
+<tr><td>冷漠</td><td>怒</td><td>冷淡疏离</td><td>冷灰</td><td>嗯</td></tr>
+<tr><td>好奇</td><td>其他</td><td>好奇上扬</td><td>青</td><td>哦？</td></tr>
+<tr><td>惊讶</td><td>其他</td><td>惊讶拔高</td><td>亮青</td><td>啊？</td></tr>
+<tr><td>平静</td><td>其他</td><td>平静自然</td><td>白</td><td>嗯</td></tr>
+</table>
+<p class="small">映射表存 <code>backend/persona/emotion_map.yaml</code>（和 shisu.md 同目录，灵魂集中管理）。新增情绪只需加一行。</p>
+
+<h2 id="inner">五、inner_world 持续情绪（进记忆）</h2>
+<div class="card green">
+<b>这是"会记仇/记喜"的关键</b>。时叙的情绪不是每轮重置，而是跨轮次持续，且落库到 memory——她记得"2 小时前你惹她生气了"。
+</div>
+<h4>状态结构</h4>
+<pre><code><span class="com"># backend/memory/inner_world.py（新增）</span>
+{
+  "current_emotion": "嗔怪",       <span class="com">// 主情绪</span>
+  "intensity": 0.5,                <span class="com">// 0-1，随时间衰减</span>
+  "cause": "用户2小时前放鸽子",     <span class="com">// 起因</span>
+  "since": "2026-08-26T14:00:00",  <span class="com">// 发生时间</span>
+  "history": [                     <span class="com">// 情绪时间线，落库</span>
+    {"t":"14:00","e":"生气","i":0.8,"cause":"放鸽子"},
+    {"t":"14:30","e":"嗔怪","i":0.5,"cause":"还在气"},
+    {"t":"16:00","e":"释然","i":0.3,"cause":"哄好了"}
+  ]
+}</code></pre>
+<h4>衰减规则</h4>
+<ul>
+  <li>每次对话后 intensity 衰减 0.1-0.15（时间+新事件叠加）</li>
+  <li>生气/委屈类衰减慢（1-2 小时仍有余韵），喜悦类衰减快</li>
+  <li>新事件可覆盖或叠加旧情绪（你刚哄好她又惹→复合情绪）</li>
+</ul>
+<h4>落库到 memory</h4>
+<p>情绪时间线写进时叙现有 memory 系统（memory_anchors 扩展或新表 <code>emotion_log</code>）。回复时注入 system prompt："你现在情绪：嗔怪(强度0.5，2小时前他放你鸽子，你还在气)"。这让 LLM 生成回复时带着"还在气"的连续性——不是每次重新开始。</p>
+
+<h2 id="feasible-code">五.五、可行性诚实评估（基于现有代码）</h2>
+<div class="card green">
+<b>结论：能实现，时叙已有半壁江山</b>。读完真实代码发现，"情绪感知 → 注入 system prompt"这条链路时叙<b>早就在跑</b>，inner_world 是在现有链路上扩展，不是从零另起。
+</div>
+<h4>时叙现状（已有基础）</h4>
+<table>
+<tr><th>现有文件</th><th>做什么</th><th>inner_world 怎么接</th></tr>
+<tr><td><code>agents/emotion.py</code></td><td>关键词规则识别<b>你的</b>情绪 9 类（开心/低落/愤怒/焦虑/疲惫/敷衍/混合/高风险）+ 推断需求 + 推荐策略，<code>format_emotion_strategy</code> <b>已把情绪注入 system prompt</b></td><td>"情绪感知→注入 prompt"链路已通，扩展即可</td></tr>
+<tr><td><code>agents/persona.py</code></td><td><code>load_persona()</code> 拼装 system prompt（shisu.md 核心 + 面具层）</td><td>现成注入点，加一段"当前情绪状态"即可</td></tr>
+<tr><td><code>memory/store.py</code></td><td>SQLite 存 sessions/messages</td><td>加 <code>emotion_log</code> 表即可落库情绪时间线</td></tr>
+<tr><td><code>memory/companion.py / self.py / observations.py</code></td><td>已有陪伴/自我/观察层记忆子系统</td><td>情绪状态可挂进现有子系统，不另起炉灶</td></tr>
+</table>
+<h4>inner_world 要补的三块（新做）</h4>
+<ol>
+  <li><b>时叙自己的情绪</b>——现在 <code>emotion.py</code> 只识别<b>你的</b>情绪，没有"她当前是嗔怪还是心疼"。要加 <code>shisu_emotion</code></li>
+  <li><b>跨轮次持续</b>——现在每句重新算，无记忆无衰减。要加状态保存 + 落库 + 衰减</li>
+  <li><b>规则升级到 LLM JSON</b>——现在靠关键词，方案要 qwen-flash 输出结构化情绪</li>
+</ol>
+<div class="card orange">
+<b>真正的难点不在"能不能存"</b>（存很容易，加个表+字段的事），而在下面两个：
+</div>
+<ul>
+  <li><b>衰减规则调参</b>——生气该气多久、怎么叠加（刚哄好又惹→复合情绪）、不同情绪衰减速度。这要反复试才自然，<b>不是写代码能定的</b></li>
+  <li><b>qwen-flash 配合度（最不确定的点）</b>——给它注入"你现在嗔怪(强度0.5)，2 小时前他放你鸽子"，<b>它会不会真的调整语气</b>？小模型可能忽略情绪指令、或过于生硬。这是整个方案最该先验证的</li>
+</ul>
+<div class="card pink">
+<b>调整后的 P0 第一步</b>：先别急着建 inner_world，<b>先做最小实验验证小模型配合度</b>——拿 qwen-flash，分别给"平静 / 生气0.7 / 温柔0.6 / 嗔怪0.5"四组情绪 system prompt，问同一句"我今天好累"，看回复语气是否真有区别。<b>1 小时能做完</b>。<br>
+· 配合 → inner_world 方案稳，按原计划走<br>
+· 不配合 → 情绪感知这步换 qwen-plus（只这一步用大模型，其余仍用 flash 省钱）
+</div>
+<p class="small">这一步把方案最大不确定性前置验证，避免做完 inner_world 才发现小模型带不动情绪——白做工。验证通过后再建 <code>emotion_log</code> 表 + inner_world 状态机 + 衰减逻辑。</p>
+
+<h2 id="quick">六、quick_react 即时反应层</h2>
+<p>qwen-flash 完整回复有 1-3 秒延迟。这层在<b>收到你消息后立即</b>（不等 LLM）吐一个语气词 + 字幕闪现，填空窗，让她"反应快"。</p>
+<h4>实现</h4>
+<pre><code><span class="com"># backend/agents/quick_react.py（新增）</span>
+<span class="com"># 不调 LLM，纯规则：基于 inner_world 当前情绪 + 用户消息长度/关键词</span>
+def quick_react(inner_emotion, user_msg):
+    <span class="com"># 1. 当前情绪主导词池</span>
+    pool = EMOTION_MAP[inner_emotion]["quick_react"]  <span class="com"># 如嗔怪→["哼","你还好意思说","又来"]</span>
+    <span class="com"># 2. 消息特征微调：疑问句加"？"，长消息加"嗯..."</span>
+    <span class="com"># 3. 随机选一个，立即推前端字幕 + 粒子球微动（已有）</span>
+    return pick(pool, user_msg_traits)</code></pre>
+<p>这层和 LLM 主回复并行：quick_react 先到（200ms 内），LLM reply 后到。用户体验：你说完→她立刻"哼"一声（字幕闪）→ 1 秒后完整回复+语音。体感"她在听、有即时反应"。</p>
+
+<h2 id="tts">七、CosyVoice Instruct 接入</h2>
+<p>CosyVoice-300M-Instruct（300M 参数，FP16 约 600MB 显存，<b>4GB 可跑</b>）按情绪指令控制语气 [$TRAE_REF](https://github.com/FunAudioLLM/cosyVoice)。</p>
+<h4>接入方式</h4>
+<ul>
+  <li>本地起 CosyVoice 服务（FastAPI 子进程或独立端口），时叙后端调它合成</li>
+  <li>替换现在浏览器 SpeechSynthesis（可保留作 fallback）</li>
+  <li>调用：<code>cosyvoice.instruct_tts(text, instruct="用宠溺心疼的语气说")</code>——instruct 来自 emotion_map.yaml</li>
+</ul>
+<h4>声音复刻（P2）</h4>
+<ul>
+  <li>CosyVoice zero-shot：录你 10 秒样本→复刻音色→时叙用你的声音说话</li>
+  <li>控制台加"声音来源"→"我的音色"选项（框架已留）</li>
+</ul>
+<h4>控制台映射</h4>
+<p>你已做的控制台预设（日常/温柔/活泼/沉稳）→ 对应 CosyVoice instruct 基线语气；情绪标签在其上叠加（温柔基调+生气→冷硬短促覆盖）。</p>
+
+<h2 id="persona">八、persona 强化：拟人词/情话/热梗</h2>
+<p><b>不做独立拟人词模块</b>，全部在 <code>shisu.md</code>（灵魂唯一来源）+ 面具层强化，让 LLM 自然产出。</p>
+<h4>shisu.md 增补条目（示例）</h4>
+<pre><code><span class="com"># 语气偏好</span>
+- 说话带自然语气词：哼/啊/哦/嗯/哎呀/呼，但不滥用，情绪到位才出
+- 生气时短促冷淡，温柔时长暖宠溺，委屈时小声慢语
+- 亲密时可以说情话，但要自然不油腻（"今天也想你"而非"你是我生命中的光"）
+
+<span class="com"># 热梗</span>
+- 偶尔用当下的网络热梗，但要自然贴切，不为梗而梗
+- 不懂的梗可以坦诚说"这个我不太懂，你给我讲讲"
+
+<span class="com"># 情绪表达</span>
+- 有自己的情绪，会生气会温柔会委屈会得意，不是永远平和
+- 情绪会延续：你惹她生气后，她不会马上翻篇，会嗔怪一阵
+- 会记仇也会记喜：你对她好的细节她记着，你伤她的话她也记着</code></pre>
+<h4>面具层</h4>
+<p>4 面具（同行者/老闺蜜/感情向导/工作参谋）各自加情绪偏好。如"老闺蜜"面具→更嗔怪俏皮，"感情向导"→更温柔心疼。<code>agents/mask.py</code> 路由不变，只是每张面具层加情绪基调。</p>
+
+<h2 id="learn">九、自主学习激活</h2>
+<div class="card orange">
+<b>你之前写过但没实现</b>——memory 里已有 message_feedback(赞/踩)→画像 + goals + 观察层，方案落实打通。
+</div>
+<h4>三层学习</h4>
+<ol>
+  <li><b>显式反馈</b>：你对回复赞/踩→赞的风格强化进画像（"用户喜欢这种语气"），踩的弱化。需要前端加 👍/👎 按钮接后端</li>
+  <li><b>隐式观察</b>：观察你的回复长度/响应速度/是否主动开启话题→推断偏好（你回得长=聊得开心，回"哦"=敷衍）</li>
+  <li><b>目标生命周期</b>：goals 表——时叙自己定小目标（"这周多关心他工作"），周期复盘，落实进回复倾向</li>
+</ol>
+<p>这些时叙代码里已有骨架，方案是<b>接上线路</b>：前端反馈按钮 → 后端画像更新 → 下次回复 system prompt 注入"用户偏好：喜欢直接不啰嗦"。</p>
+
+<h2 id="active">十、主动互动情绪驱动</h2>
+<p>时叙已有 15 秒轮询主动陪伴提醒，改造为<b>情绪驱动</b>：</p>
+<table>
+<tr><th>她当前情绪</th><th>你久不说话</th><th>她主动行为</th></tr>
+<tr><td>生气/嗔怪</td><td>15分钟+</td><td>冷一句"还知道来啊"或憋着不主动</td></tr>
+<tr><td>温柔/心疼</td><td>15分钟+</td><td>主动关心"在忙吗，别太累"</td></tr>
+<tr><td>委屈</td><td>久</td><td>小声"你是不是不想理我"</td></tr>
+<tr><td>窃喜/得意</td><td>—</td><td>主动分享让她开心的事</td></tr>
+</table>
+<p>实现：现有 15 秒轮询逻辑加 inner_world 情绪判断，决定"要不要主动 + 说什么"。复用 quick_react 词池。</p>
+
+<h2 id="stages">十一、实施阶段</h2>
+
+<h4>P0 · 情绪标签 JSON + inner_world + quick_react（3-4 天）</h4>
+<ol>
+  <li>system prompt 改造：约束 qwen-flash 返回 emotion JSON</li>
+  <li><code>backend/persona/emotion_map.yaml</code> 18 情绪映射表</li>
+  <li><code>backend/memory/inner_world.py</code> 持续情绪 + 落库 + 衰减</li>
+  <li><code>backend/agents/quick_react.py</code> 即时语气层</li>
+  <li>前端字幕色随情绪变 + quick_react 字幕闪现</li>
+  <li>验证：说委屈的话→她"哎..."→1秒后"心疼"语气回复，字幕粉色</li>
+</ol>
+
+<h4>P1 · CosyVoice Instruct 接入（2-3 天）</h4>
+<ol>
+  <li>本地起 CosyVoice 服务（300M，4GB 验证可跑）</li>
+  <li>后端 TTS 链路从浏览器 SpeechSynthesis 切到 CosyVoice</li>
+  <li>emotion_map 的 instruct 字段接到 CosyVoice</li>
+  <li>控制台预设映射 CosyVoice 基线语气</li>
+  <li>验证：生气时语气冷硬、温柔时宠溺，能听出区别</li>
+</ol>
+
+<h4>P2 · 学习/主动/复刻（4-6 天）</h4>
+<ol>
+  <li>前端 👍/👎 反馈按钮 + 后端画像更新线路接通</li>
+  <li>隐式观察层激活（回复长度/响应速度→偏好）</li>
+  <li>主动陪伴改造为情绪驱动（15 秒轮询加情绪判断）</li>
+  <li>声音复刻（CosyVoice zero-shot，录你 10 秒）</li>
+  <li>persona 强化（情话/热梗/拟人词条目进 shisu.md）</li>
+</ol>
+
+<h2 id="risk">十二、风险与待确认</h2>
+<table>
+<tr><th>风险/待确认</th><th>说明</th><th>对策</th></tr>
+<tr><td>qwen-flash JSON 格式稳定性</td><td>小模型可能不总返回严格 JSON</td><td>response_format=json_object 约束 + fallback 纯文本+默认情绪</td></tr>
+<tr><td>CosyVoice 4GB 实跑</td><td>300M 理论够，实测可能因其他进程吃显存</td><td>P1 先单跑验证，不行则 CosyVoice 走云 API（DashScope 也有）</td></tr>
+<tr><td>情绪感知准确度</td><td>qwen-flash 理解情绪可能不如大模型细</td><td>必要时升级情绪感知用更强模型（只判情绪这步可换 qwen-plus）</td></tr>
+<tr><td>quick_react 词池生硬</td><td>规则选词可能不如 LLM 自然</td><td>P2 可改 quick_react 用极小模型/快回复，或保留规则做"即时"层</td></tr>
+<tr><td>情绪记忆膨胀</td><td>emotion_log 长期累积</td><td>定期归档+只保留近期+高强度事件</td></tr>
+<tr><td>热梗时效</td><td>qwen-flash 训练数据有截止</td><td>research 工具补实时梗（已有），persona 引导"不懂就问"</td></tr>
+</table>
+
+<div class="card pink">
+<b>我的建议</b>：P0 先跑通"情绪 JSON + inner_world + quick_react"——这是让你最直观感到"她有情绪、会回应、反应快"的核心，3-4 天能见效果。CosyVoice（P1）让情绪听得见。学习/主动（P2）让她越来越懂你。<b>建议 P0 做完先停下来让你体验</b>，再决定 P1/P2 节奏——避免一口气做完发现方向要调。
+</div>
+
+<div class="quote">"情绪不是一张表情图，而是连续参数 + 预设 + 动作 + TTS 风格 + 字幕共同组成"——AILiveVTuber-Stage 技术文档。时叙去掉表情/动作（你不做数字人），保留 TTS 风格 + 字幕 + 即时语气词，情绪照样立体。</div>
+
+<div class="foot">
+本方案基于 AILiveVTuber-Stage 情绪四件套 + Open-LLM-VTuber TTS 抽象 + CosyVoice Instruct + 时叙现有代码（persona/mask/memory/tools）编写。<br>
+下一步：你确认方案后，我从 P0 开始——先改 system prompt 约束 JSON 输出 + 建 emotion_map.yaml + inner_world，跑通"委屈→心疼"这条情绪链路给你看效果。
+</div>
+
+</body>
+</html>
