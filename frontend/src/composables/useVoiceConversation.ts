@@ -10,7 +10,8 @@
  */
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { MicrophoneCapture } from '../audio/capture'
-import { BrowserSpeechOutput } from '../audio/speechSynthesis'
+import { BackendSpeechOutput } from '../audio/backendSpeech'
+import { BrowserSpeechOutput, type SpeechOutput } from '../audio/speechSynthesis'
 import { VoiceProtocolClient } from '../audio/voiceClient'
 import { VoiceResponseController } from '../audio/voiceResponse'
 import { useAgentStateStore } from '../stores/agentState'
@@ -34,12 +35,32 @@ export function useVoiceConversation() {
   let capture: MicrophoneCapture | null = null
   let unsubscribeReply: (() => void) | null = null
 
-  const output = new BrowserSpeechOutput(() => ({
+  const browserOutput = new BrowserSpeechOutput(() => ({
     rate: voiceSettings.rate,
     pitch: voiceSettings.pitch,
     voiceURI: voiceSettings.voiceURI,
     muted: voiceSettings.shouldMute,
   }))
+  const cloudOutput = new BackendSpeechOutput(() => ({
+    muted: voiceSettings.shouldMute,
+  }))
+
+  // 按 ttsEngine 动态转发：控台切换引擎后，下一段语音即用新引擎。
+  const output: SpeechOutput = {
+    get available() {
+      return voiceSettings.ttsEngine === 'cloud'
+        ? cloudOutput.available
+        : browserOutput.available
+    },
+    speak(text, callbacks) {
+      const target = voiceSettings.ttsEngine === 'cloud' ? cloudOutput : browserOutput
+      target.speak(text, callbacks)
+    },
+    cancel() {
+      browserOutput.cancel()
+      cloudOutput.cancel()
+    },
+  }
 
   const voiceResponse = new VoiceResponseController(
     {

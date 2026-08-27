@@ -51,6 +51,18 @@ ASR_DEVICE = os.getenv("ASR_DEVICE", "cpu")
 ASR_COMPUTE_TYPE = os.getenv("ASR_COMPUTE_TYPE", "int8")
 ASR_LANGUAGE = os.getenv("ASR_LANGUAGE", "zh")
 
+# 语音合成（阿里云百炼 DashScope）。与 LLM 共用同一套 Key，故默认 fallback 到 DEEPSEEK_API_KEY。
+# 指令控制模型 qwen3-tts-instruct-flash：instructions 参数传自然语言语气指令（与 emotion_map 的 cosyvoice_instruct 对接）。
+TTS_ENABLED = os.getenv("TTS_ENABLED", "true").lower() == "true"
+TTS_API_KEY = os.getenv("TTS_API_KEY", "").strip() or DEEPSEEK_API_KEY
+TTS_MODEL = os.getenv("TTS_MODEL", "qwen3-tts-instruct-flash")
+TTS_VOICE = os.getenv("TTS_VOICE", "Cherry")
+TTS_BASE_URL = os.getenv(
+    "TTS_BASE_URL",
+    "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation",
+)
+TTS_TIMEOUT_SECONDS = float(os.getenv("TTS_TIMEOUT_SECONDS", "30"))
+
 # 天气（和风天气 QWeather 免费版，https://dev.qweather.com 注册获取 Key）
 WEATHER_ENABLED = os.getenv("WEATHER_ENABLED", "true").lower() == "true"
 WEATHER_API_KEY = os.getenv("WEATHER_API_KEY", "")

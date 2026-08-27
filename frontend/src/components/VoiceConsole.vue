@@ -4,6 +4,7 @@ import { NButton, NSelect, NSlider, NSwitch, NTag } from 'naive-ui'
 import {
   PRESET_OPTIONS,
   useVoiceSettingsStore,
+  type TtsEngine,
   type VoicePreset,
 } from '../stores/voiceSettings'
 
@@ -14,6 +15,11 @@ const props = defineProps<{
 
 const voice = useVoiceSettingsStore()
 const open = ref(false)
+
+const ENGINE_OPTIONS: { label: string; value: string }[] = [
+  { label: '浏览器合成', value: 'browser' },
+  { label: '云合成（情绪语气）', value: 'cloud' },
+]
 
 interface VoiceOption {
   label: string
@@ -76,6 +82,10 @@ function onVoiceChange(v: string | number | null) {
   voice.setVoiceURI(typeof v === 'string' ? v : '')
 }
 
+function onEngineChange(v: string | number | null) {
+  if (v === 'browser' || v === 'cloud') voice.setTtsEngine(v as TtsEngine)
+}
+
 function onReplay() {
   if (!props.replayLastReply()) {
     // 没有可重播的内容时，退而用试听示例
@@ -127,43 +137,59 @@ const sizeMarks = { 12: '小', 17: '中', 28: '大' }
         </div>
 
         <div class="ctrl-row">
-          <span class="ctrl-label">语速 <em>{{ voice.rate.toFixed(2) }}×</em></span>
-          <NSlider
-            :value="voice.rate"
-            :min="0.5"
-            :max="2"
-            :step="0.05"
-            :marks="rateMarks"
-            size="small"
-            @update:value="(v: number) => voice.setRate(v)"
-          />
-        </div>
-
-        <div class="ctrl-row">
-          <span class="ctrl-label">音调 <em>{{ voice.pitch.toFixed(2) }}</em></span>
-          <NSlider
-            :value="voice.pitch"
-            :min="0"
-            :max="2"
-            :step="0.05"
-            :marks="pitchMarks"
-            size="small"
-            @update:value="(v: number) => voice.setPitch(v)"
-          />
-        </div>
-
-        <div class="ctrl-row">
-          <span class="ctrl-label">声音</span>
+          <span class="ctrl-label">语音引擎</span>
           <NSelect
-            :value="voice.voiceURI || undefined"
+            :value="voice.ttsEngine"
             size="small"
-            :options="voiceOptions"
-            placeholder="系统默认"
+            :options="ENGINE_OPTIONS"
             :consistent-menu-width="false"
-            filterable
-            @update:value="onVoiceChange"
+            @update:value="onEngineChange"
           />
         </div>
+        <p v-if="voice.ttsEngine === 'cloud'" class="engine-hint">
+          云合成由时叙当前情绪自动控制语气，语速/音调滑块与声音选择暂不生效。
+        </p>
+
+        <template v-if="voice.ttsEngine !== 'cloud'">
+          <div class="ctrl-row">
+            <span class="ctrl-label">语速 <em>{{ voice.rate.toFixed(2) }}×</em></span>
+            <NSlider
+              :value="voice.rate"
+              :min="0.5"
+              :max="2"
+              :step="0.05"
+              :marks="rateMarks"
+              size="small"
+              @update:value="(v: number) => voice.setRate(v)"
+            />
+          </div>
+
+          <div class="ctrl-row">
+            <span class="ctrl-label">音调 <em>{{ voice.pitch.toFixed(2) }}</em></span>
+            <NSlider
+              :value="voice.pitch"
+              :min="0"
+              :max="2"
+              :step="0.05"
+              :marks="pitchMarks"
+              size="small"
+              @update:value="(v: number) => voice.setPitch(v)"
+            />
+          </div>
+
+          <div class="ctrl-row">
+            <span class="ctrl-label">声音</span>
+            <NSelect
+              :value="voice.voiceURI || undefined"
+              size="small"
+              :options="voiceOptions"
+              placeholder="系统默认"
+              :consistent-menu-width="false"
+              filterable
+              @update:value="onVoiceChange"
+            />
+          </div>
+        </template>
 
         <div class="ctrl-row btn-row">
           <NButton size="small" secondary @click="onReplay">重播</NButton>
@@ -303,6 +329,13 @@ const sizeMarks = { 12: '小', 17: '中', 28: '大' }
 }
 .ctrl-label.small {
   font-size: 11px;
+}
+
+.engine-hint {
+  margin: -4px 0 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: rgba(255, 184, 48, 0.72);
 }
 
 .btn-row {

@@ -11,6 +11,9 @@ const STORAGE_KEY = 'shishu.voice-settings.v1'
 
 export type VoicePreset = 'daily' | 'gentle' | 'lively' | 'calm'
 
+/** TTS 引擎：browser=浏览器 SpeechSynthesis；cloud=后端 DashScope 云合成（情绪语气） */
+export type TtsEngine = 'browser' | 'cloud'
+
 export interface PresetSpec {
   rate: number
   pitch: number
@@ -34,6 +37,7 @@ interface PersistedSettings {
   rate: number
   pitch: number
   voiceURI: string
+  ttsEngine: TtsEngine
   autoRead: boolean
   nightQuietEnabled: boolean
   nightQuietStart: string
@@ -46,6 +50,7 @@ const DEFAULTS: PersistedSettings = {
   rate: 1.0,
   pitch: 1.0,
   voiceURI: '',
+  ttsEngine: 'browser',
   autoRead: true,
   nightQuietEnabled: false,
   nightQuietStart: '23:00',
@@ -62,6 +67,7 @@ function load(): PersistedSettings {
       rate: clampNum(saved.rate, 0.5, 2.0, DEFAULTS.rate),
       pitch: clampNum(saved.pitch, 0, 2.0, DEFAULTS.pitch),
       voiceURI: typeof saved.voiceURI === 'string' ? saved.voiceURI : DEFAULTS.voiceURI,
+      ttsEngine: saved.ttsEngine === 'cloud' ? 'cloud' : 'browser',
       autoRead: saved.autoRead !== false,
       nightQuietEnabled: saved.nightQuietEnabled === true,
       nightQuietStart: isHHMM(saved.nightQuietStart) ? saved.nightQuietStart : DEFAULTS.nightQuietStart,
@@ -105,6 +111,7 @@ export const useVoiceSettingsStore = defineStore('voiceSettings', () => {
   const rate = ref(loaded.rate)
   const pitch = ref(loaded.pitch)
   const voiceURI = ref(loaded.voiceURI)
+  const ttsEngine = ref<TtsEngine>(loaded.ttsEngine)
   const autoRead = ref(loaded.autoRead)
   const nightQuietEnabled = ref(loaded.nightQuietEnabled)
   const nightQuietStart = ref(loaded.nightQuietStart)
@@ -133,6 +140,11 @@ export const useVoiceSettingsStore = defineStore('voiceSettings', () => {
 
   function setVoiceURI(v: string) {
     voiceURI.value = v
+    persist()
+  }
+
+  function setTtsEngine(v: TtsEngine) {
+    ttsEngine.value = v
     persist()
   }
 
@@ -169,6 +181,7 @@ export const useVoiceSettingsStore = defineStore('voiceSettings', () => {
           rate: rate.value,
           pitch: pitch.value,
           voiceURI: voiceURI.value,
+          ttsEngine: ttsEngine.value,
           autoRead: autoRead.value,
           nightQuietEnabled: nightQuietEnabled.value,
           nightQuietStart: nightQuietStart.value,
@@ -195,6 +208,7 @@ export const useVoiceSettingsStore = defineStore('voiceSettings', () => {
     rate,
     pitch,
     voiceURI,
+    ttsEngine,
     autoRead,
     nightQuietEnabled,
     nightQuietStart,
@@ -205,6 +219,7 @@ export const useVoiceSettingsStore = defineStore('voiceSettings', () => {
     setRate,
     setPitch,
     setVoiceURI,
+    setTtsEngine,
     setAutoRead,
     setNightQuiet,
     setNightQuietRange,

@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import chat, feedback, media, memory, observations, voice
+from app.api import chat, feedback, media, memory, observations, tts, voice
 from app.db.init import init_db
 
 
@@ -34,6 +34,7 @@ app.include_router(voice.router)
 app.include_router(memory.router)
 app.include_router(feedback.router)
 app.include_router(observations.router)
+app.include_router(tts.router)
 
 
 @app.get("/api/health")
